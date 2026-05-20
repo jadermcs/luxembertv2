@@ -1,0 +1,104 @@
+"""Bits-per-byte (BPB) evaluation, comparable across tokenizers.
+
+We score each model with the pseudo-log-likelihood (PLL) of Salazar et al. 2020:
+mask one position at a time and read the model's log-prob of the true token,
+summed over all positions. Crucially we normalize by the number of bytes in the
+*original* text (identical for both variants), not by token count -- so CaseOps'
+extra marker tokens are paid for in the numerator and the comparison is fair:
+
+    BPB = sum_positions(-log p(token)) / ln(2) / original_utf8_bytes
+
+Lower is better. A model whose markers cost more bits than the shared lowercase
+embeddings save will show a *higher* BPB than the baseline.
+"""
+
+from __future__ import annotations
+
+import argparse
+import math
+
+import torch
+import torch.nn.functional as F
+from transformers import BertForMaskedLM
+
+from luxbert import config
+from luxbert.caseops import CaseOps
+from luxbert.hf_utils import load_tokenizer
+
+
+@torch.no_grad()
+def seq_pll_nats(model, mask_id, input_ids, device, micro_batch) -> float:
+    """Pseudo-log-likelihood (nats) of one token sequence under MLM scoring."""
+    ids = torch.tensor(input_ids, dtype=torch.long)
+    L = ids.size(0)
+    if L == 0:
+        return 0.0
+    total = 0.0
+    for start in range(0, L, micro_batch):
+        positions = list(range(start, min(start + micro_batch, L)))
+        b = len(positions)
+        batch = ids.unsqueeze(0).repeat(b, 1).clone()
+        for r, pos in enumerate(positions):
+            batch[r, pos] = mask_id
+        batch = batch.to(device)
+        logits = model(input_ids=batch).logits  # [b, L, V]
+        logp = F.log_softmax(logits, dim=-1)
+        for r, pos in enumerate(positions):
+            total += -logp[r, pos, ids[pos]].item()
+    return total
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--variant", choices=config.VARIANTS, required=True)
+    ap.add_argument("--model-dir", default=None, help="defaults to runs/<variant>")
+    ap.add_argument("--eval-file", default=None, help="defaults to data/raw/eval.txt")
+    ap.add_argument("--max-lines", type=int, default=300)
+    ap.add_argument("--block-size", type=int, default=128)
+    ap.add_argument("--micro-batch", type=int, default=64)
+    ap.add_argument("--marker", default=CaseOps().marker)
+    args = ap.parse_args()
+
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    model_dir = args.model_dir or str(config.variant_dir(config.RUNS, args.variant))
+    eval_file = args.eval_file or str(config.RAW / "eval.txt")
+
+    tokenizer = load_tokenizer(args.variant)
+    model = BertForMaskedLM.from_pretrained(model_dir).to(device).eval()
+    mask_id = tokenizer.mask_token_id
+    co = CaseOps(marker=args.marker)
+
+    total_nats = 0.0
+    total_bytes = 0
+    total_tokens = 0
+    n = 0
+    with open(eval_file, encoding="utf-8") as f:
+        for line in f:
+            line = line.rstrip("\n")
+            if not line:
+                continue
+            total_bytes += len(line.encode("utf-8"))  # ORIGINAL bytes, both variants
+            model_text = line if args.variant == "baseline" else co.encode(line)
+            ids = tokenizer(model_text, add_special_tokens=False)["input_ids"]
+            total_tokens += len(ids)
+            # Score EVERY token (chunked into context windows of block_size) so the
+            # full line's bytes correspond to the full PLL -> fair per-byte ratio.
+            for start in range(0, len(ids), args.block_size):
+                chunk = ids[start : start + args.block_size]
+                total_nats += seq_pll_nats(model, mask_id, chunk, device, args.micro_batch)
+            n += 1
+            if n >= args.max_lines:
+                break
+
+    bpb = total_nats / math.log(2) / total_bytes
+    print(f"variant         : {args.variant}")
+    print(f"lines scored    : {n}")
+    print(f"original bytes   : {total_bytes}")
+    print(f"tokens           : {total_tokens}")
+    print(f"tokens/byte      : {total_tokens / total_bytes:.4f}  (lower = denser)")
+    print(f"nats/token       : {total_nats / max(total_tokens,1):.4f}")
+    print(f"BPB              : {bpb:.4f}   <-- lower is better")
+
+
+if __name__ == "__main__":
+    main()
