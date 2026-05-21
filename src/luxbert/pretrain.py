@@ -1,8 +1,8 @@
-"""Pretrain a small BERT (MLM) for one variant.
+"""Pretrain a small BERT (MLM) for one variant of an experiment.
 
-Defaults are PoC-sized so the pipeline runs quickly; pass larger values on GPU
-for a real comparison. The architecture/objective is identical across variants
-to isolate the tokenizer effect.
+All hyperparameters come from the experiment config (``configs/*.yml``); the
+architecture/objective is identical across variants to isolate the tokenizer
+effect. Use a small config for a CPU PoC, a larger one on GPU.
 """
 
 from __future__ import annotations
@@ -18,7 +18,7 @@ from transformers import (
     TrainingArguments,
 )
 
-from luxbert import config
+from luxbert import config, experiment
 from luxbert.hf_utils import load_tokenizer, text_file
 
 
@@ -42,57 +42,50 @@ def build_dataset(tokenizer, train_file: str, block_size: int, num_proc: int):
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--config", required=True, help="path to a configs/*.yml file")
     ap.add_argument("--variant", choices=config.VARIANTS, required=True)
-    ap.add_argument("--block-size", type=int, default=128)
-    ap.add_argument("--hidden", type=int, default=256)
-    ap.add_argument("--layers", type=int, default=4)
-    ap.add_argument("--heads", type=int, default=4)
-    ap.add_argument("--intermediate", type=int, default=1024)
-    ap.add_argument("--mlm-prob", type=float, default=0.15)
-    ap.add_argument("--lr", type=float, default=5e-4)
-    ap.add_argument("--batch-size", type=int, default=64)
-    ap.add_argument("--epochs", type=float, default=3.0)
-    ap.add_argument("--max-steps", type=int, default=-1)
-    ap.add_argument("--warmup-ratio", type=float, default=0.05)
-    ap.add_argument("--num-proc", type=int, default=4)
-    ap.add_argument("--seed", type=int, default=42)
     args = ap.parse_args()
 
-    tokenizer = load_tokenizer(args.variant)
+    cfg = experiment.load(args.config)
+    pc = cfg.pretrain
+
+    tokenizer = load_tokenizer(cfg.name, args.variant)
     ds = build_dataset(
-        tokenizer, text_file(args.variant, "train"), args.block_size, args.num_proc
+        tokenizer, text_file(cfg.name, args.variant, "train"), pc.block_size, pc.num_proc
     )
-    print(f"[{args.variant}] {len(ds)} blocks of {args.block_size} tokens")
+    tag = f"{cfg.name}/{args.variant}"
+    print(f"[{tag}] {len(ds)} blocks of {pc.block_size} tokens")
 
     model_cfg = BertConfig(
         vocab_size=tokenizer.vocab_size,
-        hidden_size=args.hidden,
-        num_hidden_layers=args.layers,
-        num_attention_heads=args.heads,
-        intermediate_size=args.intermediate,
-        max_position_embeddings=args.block_size + 2,
+        hidden_size=pc.hidden,
+        num_hidden_layers=pc.layers,
+        num_attention_heads=pc.heads,
+        intermediate_size=pc.intermediate,
+        max_position_embeddings=pc.block_size + 2,
         pad_token_id=tokenizer.pad_token_id,
     )
     model = BertForMaskedLM(model_cfg)
-    print(f"[{args.variant}] params: {model.num_parameters()/1e6:.1f}M")
+    print(f"[{tag}] params: {model.num_parameters()/1e6:.1f}M")
 
     collator = DataCollatorForLanguageModeling(
-        tokenizer=tokenizer, mlm=True, mlm_probability=args.mlm_prob
+        tokenizer=tokenizer, mlm=True, mlm_probability=pc.mlm_prob
     )
 
-    out_dir = config.variant_dir(config.RUNS, args.variant)
+    out_dir = config.run_dir(cfg.name, args.variant)
     targs = TrainingArguments(
         output_dir=str(out_dir),
-        per_device_train_batch_size=args.batch_size,
-        learning_rate=args.lr,
-        num_train_epochs=args.epochs,
-        max_steps=args.max_steps,
-        warmup_ratio=args.warmup_ratio,
-        weight_decay=0.01,
+        per_device_train_batch_size=pc.batch_size,
+        learning_rate=pc.lr,
+        num_train_epochs=pc.epochs,
+        max_steps=pc.max_steps,
+        optim=pc.optim,
+        warmup_ratio=pc.warmup_ratio,
+        weight_decay=pc.weight_decay,
         logging_steps=50,
         save_strategy="no",
         report_to="none",
-        seed=args.seed,
+        seed=pc.seed,
         bf16=False,
         dataloader_num_workers=2,
     )
@@ -102,7 +95,7 @@ def main() -> None:
     trainer.train()
     trainer.save_model(str(out_dir))
     tokenizer.save_pretrained(str(out_dir))
-    print(f"[{args.variant}] saved model -> {out_dir}")
+    print(f"[{tag}] saved model -> {out_dir}")
 
 
 if __name__ == "__main__":

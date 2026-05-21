@@ -10,20 +10,57 @@ extra marker tokens are paid for in the numerator and the comparison is fair:
 
 Lower is better. A model whose markers cost more bits than the shared lowercase
 embeddings save will show a *higher* BPB than the baseline.
+
+Each run appends one row to ``results/bpb_summary.tsv``, tagged with the
+experiment name and key config fields so experiments can be compared later.
 """
 
 from __future__ import annotations
 
 import argparse
 import math
+from datetime import datetime, timezone
 
 import torch
 import torch.nn.functional as F
 from transformers import BertForMaskedLM
 
-from luxbert import config
+from luxbert import config, experiment
 from luxbert.caseops import CaseOps
 from luxbert.hf_utils import load_tokenizer
+
+# Column order for results/bpb_summary.tsv (also the header written on creation).
+RESULT_COLUMNS = [
+    "timestamp",
+    "experiment",
+    "variant",
+    "vocab_size",
+    "layers",
+    "hidden",
+    "heads",
+    "intermediate",
+    "optim",
+    "lr",
+    "epochs",
+    "train_docs",
+    "lines",
+    "bytes",
+    "tokens",
+    "tokens_per_byte",
+    "nats_per_token",
+    "bpb",
+]
+
+
+def append_result(row: dict) -> None:
+    """Append one TSV row to results/bpb_summary.tsv, writing the header once."""
+    config.RESULTS.mkdir(parents=True, exist_ok=True)
+    path = config.RESULTS_TSV
+    write_header = not path.exists()
+    with path.open("a", encoding="utf-8") as f:
+        if write_header:
+            f.write("\t".join(RESULT_COLUMNS) + "\n")
+        f.write("\t".join(str(row[c]) for c in RESULT_COLUMNS) + "\n")
 
 
 @torch.no_grad()
@@ -50,23 +87,23 @@ def seq_pll_nats(model, mask_id, input_ids, device, micro_batch) -> float:
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--config", required=True, help="path to a configs/*.yml file")
     ap.add_argument("--variant", choices=config.VARIANTS, required=True)
-    ap.add_argument("--model-dir", default=None, help="defaults to runs/<variant>")
-    ap.add_argument("--eval-file", default=None, help="defaults to data/raw/eval.txt")
-    ap.add_argument("--max-lines", type=int, default=300)
-    ap.add_argument("--block-size", type=int, default=128)
-    ap.add_argument("--micro-batch", type=int, default=64)
-    ap.add_argument("--marker", default=CaseOps().marker)
+    ap.add_argument("--model-dir", default=None, help="defaults to runs/<exp>/<variant>")
+    ap.add_argument("--eval-file", default=None, help="defaults to data/<exp>/raw/eval.txt")
     args = ap.parse_args()
 
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    model_dir = args.model_dir or str(config.variant_dir(config.RUNS, args.variant))
-    eval_file = args.eval_file or str(config.RAW / "eval.txt")
+    cfg = experiment.load(args.config)
+    ec = cfg.eval
 
-    tokenizer = load_tokenizer(args.variant)
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    model_dir = args.model_dir or str(config.run_dir(cfg.name, args.variant))
+    eval_file = args.eval_file or str(config.raw_dir(cfg.name) / "eval.txt")
+
+    tokenizer = load_tokenizer(cfg.name, args.variant)
     model = BertForMaskedLM.from_pretrained(model_dir).to(device).eval()
     mask_id = tokenizer.mask_token_id
-    co = CaseOps(marker=args.marker)
+    co = CaseOps(marker=cfg.marker)
 
     total_nats = 0.0
     total_bytes = 0
@@ -83,21 +120,49 @@ def main() -> None:
             total_tokens += len(ids)
             # Score EVERY token (chunked into context windows of block_size) so the
             # full line's bytes correspond to the full PLL -> fair per-byte ratio.
-            for start in range(0, len(ids), args.block_size):
-                chunk = ids[start : start + args.block_size]
-                total_nats += seq_pll_nats(model, mask_id, chunk, device, args.micro_batch)
+            for start in range(0, len(ids), ec.block_size):
+                chunk = ids[start : start + ec.block_size]
+                total_nats += seq_pll_nats(model, mask_id, chunk, device, ec.micro_batch)
             n += 1
-            if n >= args.max_lines:
+            if n >= ec.max_lines:
                 break
 
+    tokens_per_byte = total_tokens / total_bytes
+    nats_per_token = total_nats / max(total_tokens, 1)
     bpb = total_nats / math.log(2) / total_bytes
-    print(f"variant         : {args.variant}")
-    print(f"lines scored    : {n}")
-    print(f"original bytes   : {total_bytes}")
-    print(f"tokens           : {total_tokens}")
-    print(f"tokens/byte      : {total_tokens / total_bytes:.4f}  (lower = denser)")
-    print(f"nats/token       : {total_nats / max(total_tokens,1):.4f}")
-    print(f"BPB              : {bpb:.4f}   <-- lower is better")
+
+    print(f"experiment       : {cfg.name}")
+    print(f"variant          : {args.variant}")
+    print(f"lines scored     : {n}")
+    print(f"original bytes    : {total_bytes}")
+    print(f"tokens            : {total_tokens}")
+    print(f"tokens/byte       : {tokens_per_byte:.4f}  (lower = denser)")
+    print(f"nats/token        : {nats_per_token:.4f}")
+    print(f"BPB               : {bpb:.4f}   <-- lower is better")
+
+    append_result(
+        {
+            "timestamp": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "experiment": cfg.name,
+            "variant": args.variant,
+            "vocab_size": cfg.tokenizer.vocab_size,
+            "layers": cfg.pretrain.layers,
+            "hidden": cfg.pretrain.hidden,
+            "heads": cfg.pretrain.heads,
+            "intermediate": cfg.pretrain.intermediate,
+            "optim": cfg.pretrain.optim,
+            "lr": cfg.pretrain.lr,
+            "epochs": cfg.pretrain.epochs,
+            "train_docs": cfg.data.train_docs,
+            "lines": n,
+            "bytes": total_bytes,
+            "tokens": total_tokens,
+            "tokens_per_byte": f"{tokens_per_byte:.6f}",
+            "nats_per_token": f"{nats_per_token:.6f}",
+            "bpb": f"{bpb:.6f}",
+        }
+    )
+    print(f"appended -> {config.RESULTS_TSV}")
 
 
 if __name__ == "__main__":

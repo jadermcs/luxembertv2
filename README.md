@@ -34,34 +34,44 @@ for in the numerator. **Lower BPB wins.**
 > (`cu130` here). If your GPU node's NVIDIA driver is older, pin a matching
 > wheel, e.g. `uv pip install "torch" --index-url https://download.pytorch.org/whl/cu128`.
 
+An experiment is fully described by a config file in [`configs/`](configs)
+(hyperparameters: vocab size, layers, optimizer, …). The same config is run for
+both variants; each `eval_bpb` run appends a row to
+[`results/bpb_summary.tsv`](results/bpb_summary.tsv).
+
 ```bash
 uv sync
 
-# quick PoC (CPU-ok if small; GPU recommended)
-scripts/run_poc.sh 50000 2000 16000      # train_docs eval_docs vocab
+# quick PoC (CPU-ok; GPU recommended)
+scripts/run_poc.sh configs/poc.yml
 
-# on the cluster
-sbatch scripts/slurm_poc.sh
+# on the cluster (larger config)
+sbatch scripts/slurm_poc.sh configs/base.yml
 ```
 
-Individual steps:
+Individual steps (all take `--config`):
 
 ```bash
-uv run python -m luxbert.data --train-docs 50000 --eval-docs 2000
-uv run python -m luxbert.train_tokenizer --variant both --vocab-size 16000
-uv run python -m luxbert.pretrain --variant baseline
-uv run python -m luxbert.pretrain --variant caseops
-uv run python -m luxbert.eval_bpb --variant baseline
-uv run python -m luxbert.eval_bpb --variant caseops
+uv run python -m luxbert.data --config configs/poc.yml
+uv run python -m luxbert.train_tokenizer --config configs/poc.yml --variant both
+uv run python -m luxbert.pretrain --config configs/poc.yml --variant baseline
+uv run python -m luxbert.pretrain --config configs/poc.yml --variant caseops
+uv run python -m luxbert.eval_bpb --config configs/poc.yml --variant baseline
+uv run python -m luxbert.eval_bpb --config configs/poc.yml --variant caseops
 ```
+
+To add an experiment, copy a config, change `name:` and the hyperparameters, and
+run it — artifacts and results are namespaced by `name`.
 
 ## Layout
 
 | Path | What |
 |---|---|
+| `configs/*.yml` | experiment hyperparameters (one file = one experiment) |
+| `src/luxbert/experiment.py` | loads a config into typed dataclasses |
 | `src/luxbert/caseops.py` | reversible CaseOps transform (+ `tests/`) |
 | `src/luxbert/data.py` | fineweb-2 `ltz_Latn` -> raw + caseops text |
 | `src/luxbert/train_tokenizer.py` | BPE tokenizer per variant |
 | `src/luxbert/pretrain.py` | small BERT MLM trainer |
-| `src/luxbert/eval_bpb.py` | pseudo-log-likelihood BPB |
-| `scripts/run_poc.sh` / `slurm_poc.sh` | end-to-end runners |
+| `src/luxbert/eval_bpb.py` | pseudo-log-likelihood BPB -> `results/bpb_summary.tsv` |
+| `scripts/run_poc.sh` / `slurm_poc.sh` | end-to-end runners (take a config path) |

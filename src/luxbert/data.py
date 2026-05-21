@@ -11,7 +11,7 @@ import unicodedata
 
 from datasets import load_dataset
 
-from luxbert import config
+from luxbert import config, experiment
 from luxbert.caseops import CaseOps
 
 
@@ -29,19 +29,19 @@ def clean(text: str) -> str:
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--train-docs", type=int, default=50_000)
-    ap.add_argument("--eval-docs", type=int, default=2_000)
-    ap.add_argument("--min-chars", type=int, default=64, help="drop very short docs")
-    ap.add_argument("--marker", default=CaseOps().marker)
+    ap.add_argument("--config", required=True, help="path to a configs/*.yml file")
     args = ap.parse_args()
 
-    co = CaseOps(marker=args.marker)
-    config.RAW.mkdir(parents=True, exist_ok=True)
-    config.CASEOPS.mkdir(parents=True, exist_ok=True)
+    cfg = experiment.load(args.config)
+    co = CaseOps(marker=cfg.marker)
+    raw_root = config.raw_dir(cfg.name)
+    caseops_root = config.caseops_dir(cfg.name)
+    raw_root.mkdir(parents=True, exist_ok=True)
+    caseops_root.mkdir(parents=True, exist_ok=True)
 
     splits = {
-        "train": (args.train_docs, "train"),
-        "eval": (args.eval_docs, "test"),
+        "train": (cfg.data.train_docs, "train"),
+        "eval": (cfg.data.eval_docs, "test"),
     }
 
     rt_fail = 0
@@ -49,15 +49,15 @@ def main() -> None:
         ds = load_dataset(
             config.HF_DATASET, config.HF_SUBSET, split=hf_split, streaming=True
         )
-        raw_path = config.RAW / f"{name}.txt"
-        co_path = config.CASEOPS / f"{name}.txt"
+        raw_path = raw_root / f"{name}.txt"
+        co_path = caseops_root / f"{name}.txt"
         kept = 0
         with raw_path.open("w", encoding="utf-8") as fr, co_path.open(
             "w", encoding="utf-8"
         ) as fc:
             for row in ds:
                 line = clean(row["text"])
-                if len(line) < args.min_chars:
+                if len(line) < cfg.data.min_chars:
                     continue
                 enc = co.encode(line)
                 if co.decode(enc) != line:

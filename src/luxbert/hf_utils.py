@@ -7,8 +7,8 @@ from transformers import PreTrainedTokenizerFast
 from luxbert import config
 
 
-def load_tokenizer(variant: str) -> PreTrainedTokenizerFast:
-    path = config.variant_dir(config.TOKENIZERS, variant) / "tokenizer.json"
+def load_tokenizer(experiment: str, variant: str) -> PreTrainedTokenizerFast:
+    path = config.tokenizer_dir(experiment, variant) / "tokenizer.json"
     return PreTrainedTokenizerFast(
         tokenizer_file=str(path),
         unk_token="[UNK]",
@@ -19,6 +19,5 @@ def load_tokenizer(variant: str) -> PreTrainedTokenizerFast:
     )
 
 
-def text_file(variant: str, split: str) -> str:
-    text_dir = config.RAW if variant == "baseline" else config.CASEOPS
-    return str(text_dir / f"{split}.txt")
+def text_file(experiment: str, variant: str, split: str) -> str:
+    return str(config.text_dir(experiment, variant) / f"{split}.txt")

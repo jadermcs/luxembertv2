@@ -11,14 +11,13 @@ import argparse
 
 from tokenizers import Tokenizer, decoders, models, normalizers, pre_tokenizers, trainers
 
-from luxbert import config
+from luxbert import config, experiment
 
 SPECIALS = ["[PAD]", "[UNK]", "[CLS]", "[SEP]", "[MASK]"]
 
 
-def train_one(variant: str, vocab_size: int) -> None:
-    text_dir = config.RAW if variant == "baseline" else config.CASEOPS
-    train_file = str(text_dir / "train.txt")
+def train_one(exp: str, variant: str, vocab_size: int) -> None:
+    train_file = str(config.text_dir(exp, variant) / "train.txt")
 
     tok = Tokenizer(models.BPE(unk_token="[UNK]", byte_fallback=True))
     # NFC only: do NOT lowercase. For CaseOps, casing is already encoded as the
@@ -37,22 +36,23 @@ def train_one(variant: str, vocab_size: int) -> None:
     )
     tok.train([train_file], trainer)
 
-    out_dir = config.variant_dir(config.TOKENIZERS, variant)
+    out_dir = config.tokenizer_dir(exp, variant)
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path = out_dir / "tokenizer.json"
     tok.save(str(out_path))
-    print(f"[{variant}] vocab={tok.get_vocab_size()} -> {out_path}")
+    print(f"[{exp}/{variant}] vocab={tok.get_vocab_size()} -> {out_path}")
 
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--config", required=True, help="path to a configs/*.yml file")
     ap.add_argument("--variant", choices=config.VARIANTS + ("both",), default="both")
-    ap.add_argument("--vocab-size", type=int, default=16_000)
     args = ap.parse_args()
 
+    cfg = experiment.load(args.config)
     variants = config.VARIANTS if args.variant == "both" else (args.variant,)
     for v in variants:
-        train_one(v, args.vocab_size)
+        train_one(cfg.name, v, cfg.tokenizer.vocab_size)
 
 
 if __name__ == "__main__":
