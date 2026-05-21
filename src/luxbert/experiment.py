@@ -10,7 +10,7 @@ Schema (all sections optional; omitted fields fall back to the defaults below)::
     marker: "↑"
     data:      {train_docs, eval_docs, min_chars}
     tokenizer: {vocab_size}
-    pretrain:  {block_size, hidden, layers, heads, intermediate, mlm_prob,
+    pretrain:  {arch, block_size, hidden, layers, heads, intermediate, mlm_prob,
                 optim, lr, weight_decay, batch_size, epochs, max_steps,
                 warmup_ratio, num_proc, seed}
     eval:      {max_lines, block_size, micro_batch}
@@ -40,6 +40,7 @@ class TokenizerCfg:
 
 @dataclass(frozen=True)
 class PretrainCfg:
+    arch: str = "bert"  # encoder architecture: "bert" or "modernbert"
     block_size: int = 128
     hidden: int = 256
     layers: int = 4
