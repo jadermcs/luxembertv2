@@ -23,7 +23,7 @@ from datetime import datetime, timezone
 
 import torch
 import torch.nn.functional as F
-from transformers import BertForMaskedLM
+from transformers import AutoModelForMaskedLM
 
 from luxbert import config, experiment
 from luxbert.caseops import CaseOps
@@ -34,6 +34,7 @@ RESULT_COLUMNS = [
     "timestamp",
     "experiment",
     "variant",
+    "arch",
     "vocab_size",
     "layers",
     "hidden",
@@ -101,7 +102,7 @@ def main() -> None:
     eval_file = args.eval_file or str(config.raw_dir(cfg.name) / "eval.txt")
 
     tokenizer = load_tokenizer(cfg.name, args.variant)
-    model = BertForMaskedLM.from_pretrained(model_dir).to(device).eval()
+    model = AutoModelForMaskedLM.from_pretrained(model_dir).to(device).eval()
     mask_id = tokenizer.mask_token_id
     co = CaseOps(marker=cfg.marker)
 
@@ -145,6 +146,7 @@ def main() -> None:
             "timestamp": datetime.now(timezone.utc).isoformat(timespec="seconds"),
             "experiment": cfg.name,
             "variant": args.variant,
+            "arch": cfg.pretrain.arch,
             "vocab_size": cfg.tokenizer.vocab_size,
             "layers": cfg.pretrain.layers,
             "hidden": cfg.pretrain.hidden,

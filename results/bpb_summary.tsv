@@ -1,1 +1,1 @@
-timestamp	experiment	variant	vocab_size	layers	hidden	heads	intermediate	optim	lr	epochs	train_docs	lines	bytes	tokens	tokens_per_byte	nats_per_token	bpb
+timestamp	experiment	variant	arch	vocab_size	layers	hidden	heads	intermediate	optim	lr	epochs	train_docs	lines	bytes	tokens	tokens_per_byte	nats_per_token	bpb

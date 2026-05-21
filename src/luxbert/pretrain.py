@@ -14,12 +14,54 @@ from transformers import (
     BertConfig,
     BertForMaskedLM,
     DataCollatorForLanguageModeling,
+    ModernBertConfig,
+    ModernBertForMaskedLM,
     Trainer,
     TrainingArguments,
 )
 
 from luxbert import config, experiment
 from luxbert.hf_utils import load_tokenizer, text_file
+
+# Encoder architectures, selected by pretrain.arch in the config. Both variants of
+# an experiment always use the same arch -- only the tokenizer/text differs -- so
+# the BPB comparison stays fair. Each entry is (config class, MLM model class).
+ARCHITECTURES = {
+    "bert": (BertConfig, BertForMaskedLM),
+    "modernbert": (ModernBertConfig, ModernBertForMaskedLM),
+}
+
+
+def build_model(pc, tokenizer):
+    """Construct a from-scratch MLM whose arch is chosen by ``pc.arch``.
+
+    The hyperparameters below map onto the shared keyword names accepted by every
+    supported config class, so an experiment's sizing is identical across arches.
+    """
+    try:
+        config_cls, model_cls = ARCHITECTURES[pc.arch]
+    except KeyError:
+        raise ValueError(
+            f"unknown arch {pc.arch!r}; choose one of {sorted(ARCHITECTURES)}"
+        ) from None
+    kwargs = dict(
+        vocab_size=tokenizer.vocab_size,
+        hidden_size=pc.hidden,
+        num_hidden_layers=pc.layers,
+        num_attention_heads=pc.heads,
+        intermediate_size=pc.intermediate,
+        max_position_embeddings=pc.block_size + 2,
+        pad_token_id=tokenizer.pad_token_id,
+        bos_token_id=tokenizer.bos_token_id,
+        eos_token_id=tokenizer.eos_token_id,
+    )
+    # ModernBERT's config carries extra special-token ids that default to the
+    # original 50k-vocab ModernBERT (overflowing ours); align them with our
+    # tokenizer so they stay valid indices.
+    if pc.arch == "modernbert":
+        kwargs["cls_token_id"] = tokenizer.cls_token_id
+        kwargs["sep_token_id"] = tokenizer.sep_token_id
+    return model_cls(config_cls(**kwargs))
 
 
 def build_dataset(tokenizer, train_file: str, block_size: int, num_proc: int):
@@ -56,17 +98,8 @@ def main() -> None:
     tag = f"{cfg.name}/{args.variant}"
     print(f"[{tag}] {len(ds)} blocks of {pc.block_size} tokens")
 
-    model_cfg = BertConfig(
-        vocab_size=tokenizer.vocab_size,
-        hidden_size=pc.hidden,
-        num_hidden_layers=pc.layers,
-        num_attention_heads=pc.heads,
-        intermediate_size=pc.intermediate,
-        max_position_embeddings=pc.block_size + 2,
-        pad_token_id=tokenizer.pad_token_id,
-    )
-    model = BertForMaskedLM(model_cfg)
-    print(f"[{tag}] params: {model.num_parameters()/1e6:.1f}M")
+    model = build_model(pc, tokenizer)
+    print(f"[{tag}] arch: {pc.arch}  params: {model.num_parameters()/1e6:.1f}M")
 
     collator = DataCollatorForLanguageModeling(
         tokenizer=tokenizer, mlm=True, mlm_probability=pc.mlm_prob

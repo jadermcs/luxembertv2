@@ -34,8 +34,9 @@ configs/<exp>.yml`**; the model stages also take `--variant baseline|caseops`
 
 ## Experiments and configs
 
-An experiment is one YAML file in `configs/` (e.g. `poc.yml`, `base.yml`) holding all
-hyperparameters (vocab size, layers/hidden/heads, optimizer, lr, epochs, …). `name:`
+An experiment is one YAML file in `configs/` (e.g. `poc.yml`, `base.yml`, `modernbert.yml`)
+holding all hyperparameters (vocab size, layers/hidden/heads, optimizer, lr, epochs,
+`pretrain.arch`, …). `name:`
 defaults to the file stem. The **same config is applied to both variants** — the variant
 is a CLI flag, never stored in the config — which is what keeps the comparison fair.
 `experiment.py` parses a config into frozen dataclasses (`DataCfg`, `TokenizerCfg`,
@@ -60,9 +61,12 @@ State passes between stages as **files on disk** at the namespaced paths above.
    is what makes BPB comparable. It verifies CaseOps round-trips on every doc.
 2. **`train_tokenizer.py`** — trains an identical-config BPE tokenizer per variant; the
    *only* input difference is raw vs CaseOps text. NFC normalize, no lowercasing.
-3. **`pretrain.py`** — trains a small `BertForMaskedLM` from scratch. Architecture,
-   objective, and hyperparameters are identical across variants — only the tokenizer and
-   text differ. PoC-sized defaults; the SLURM script overrides with larger model/data.
+3. **`pretrain.py`** — trains a small MLM from scratch. The encoder architecture is
+   chosen by `pretrain.arch` (`bert` → `BertForMaskedLM`, `modernbert` →
+   `ModernBertForMaskedLM`; default `bert`); see `ARCHITECTURES` / `build_model`.
+   Architecture, objective, and hyperparameters are identical across variants — only the
+   tokenizer and text differ. PoC-sized defaults; the SLURM script overrides with larger
+   model/data.
 4. **`eval_bpb.py`** — scores held-out text with pseudo-log-likelihood (mask one token
    at a time), normalized by **original UTF-8 byte count** (not token count). Both
    variants are scored against the same original bytes, so CaseOps' extra marker tokens
