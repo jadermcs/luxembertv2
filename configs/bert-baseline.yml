@@ -1,8 +1,7 @@
-# Larger experiment for the GPU cluster (scripts/slurm.sh), baseline variant.
-# Keep every field below in sync with base-caseops.yml -- only `name` and `variant`
+# Larger experiment for the GPU cluster (scripts/slurm.sh), baseline tokenizer.
+# Keep every field below in sync with base-caseops.yml -- only `name` and `tokenizer.kind`
 # may differ. Unspecified fields fall back to the defaults in luxbert/experiment.py.
 name: base-baseline
-variant: baseline
 marker: "↑"
 
 data:
@@ -10,6 +9,7 @@ data:
   eval_docs: 3000
 
 tokenizer:
+  kind: baseline
   vocab_size: 32000
 
 pretrain:

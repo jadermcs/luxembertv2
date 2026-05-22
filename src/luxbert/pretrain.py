@@ -1,7 +1,7 @@
-"""Pretrain a small BERT (MLM) for one variant of an experiment.
+"""Pretrain a small BERT (MLM) for one tokenizer kind of an experiment.
 
 All hyperparameters come from the experiment config (``configs/*.yml``); the
-architecture/objective is identical across variants to isolate the tokenizer
+architecture/objective is identical across kinds to isolate the tokenizer
 effect. Use a small config for a CPU PoC, a larger one on GPU.
 """
 
@@ -70,7 +70,7 @@ class PackedModernBertForMaskedLM(ModernBertForMaskedLM):
         )
 
 
-# Encoder architectures, selected by pretrain.arch in the config. Both variants of
+# Encoder architectures, selected by pretrain.arch in the config. Both kinds of
 # an experiment always use the same arch -- only the tokenizer/text differs -- so
 # the BPB comparison stays fair. Each entry is (config class, MLM model class).
 ARCHITECTURES = {
@@ -112,7 +112,7 @@ def build_model(pc, tokenizer):
     # DeBERTa's distinguishing feature is disentangled attention over relative
     # positions, which is off by the config's defaults; turn it on with the
     # standard DeBERTa-v3 settings so the arch is actually DeBERTa, not a BERT
-    # twin. Identical across variants, so the BPB comparison stays fair.
+    # twin. Identical across kinds, so the BPB comparison stays fair.
     if pc.arch == "deberta":
         kwargs["relative_attention"] = True
         kwargs["position_buckets"] = 256
@@ -134,7 +134,7 @@ def build_dataset(tokenizer, train_file: str, block_size: int, num_proc: int, ar
     * ``bert`` -- insert one ``[SEP]`` between documents (RoBERTa FULL-SENTENCES);
       a learned boundary signal rather than hard isolation.
 
-    Either way the treatment is identical across the two variants, so BPB stays
+    Either way the treatment is identical across the two kinds, so BPB stays
     a fair comparison.
     """
     ds = load_dataset("text", data_files={"train": train_file})["train"]
@@ -206,12 +206,12 @@ def main() -> None:
     tokenizer = load_tokenizer(cfg.name)
     ds = build_dataset(
         tokenizer,
-        text_file(cfg.name, cfg.variant, "train"),
+        text_file(cfg.data_key, cfg.tokenizer.kind, "train"),
         pc.block_size,
         pc.num_proc,
         pc.arch,
     )
-    tag = f"{cfg.name}/{cfg.variant}"
+    tag = f"{cfg.name}/{cfg.tokenizer.kind}"
     print(f"[{tag}] {len(ds)} blocks of {pc.block_size} tokens")
 
     model = build_model(pc, tokenizer)

@@ -30,28 +30,33 @@ sbatch scripts/slurm.sh                       # full pipeline on the GPU cluster
 
 Individual stages (all under `uv run python -m luxbert.<module>`): `data` →
 `train_tokenizer` → `pretrain` → `eval_bpb`. **Every stage takes one `--config
-configs/<exp>.yml`** and nothing else — the variant is read from the config, not
-a flag. See `scripts/run.sh` for the order; it runs the stages once per config.
+configs/<exp>.yml`** and nothing else — the tokenizer kind is read from the config,
+not a flag. See `scripts/run.sh` for the order; it runs the stages once per config.
 
 ## Experiments and configs
 
-An experiment+variant is one YAML file in `configs/` (e.g. `poc-baseline.yml`,
+An experiment+tokenizer is one YAML file in `configs/` (e.g. `poc-baseline.yml`,
 `poc-caseops.yml`, `base-*.yml`, `modernbert-*.yml`) holding all hyperparameters
 (vocab size, layers/hidden/heads, optimizer, lr, epochs, `pretrain.arch`, …) plus a
-**required `variant:`** (`baseline` or `caseops`). `name:` defaults to the file stem.
-One config = one variant, so a fair comparison is a **pair** of configs that are
-identical except for `name` and `variant` — keeping that pair in sync by hand is what
-keeps the comparison fair. `experiment.py` parses a config into frozen dataclasses
-(`DataCfg`, `TokenizerCfg`, `PretrainCfg`, `EvalCfg`); a missing/invalid `variant`
-raises, unknown YAML keys raise, omitted keys use the dataclass defaults. To add an
-experiment, copy a config *pair* and change `name:`, `variant:`, + the fields.
+**required `tokenizer.kind`** (`baseline` or `caseops`). `name:` defaults to the file
+stem. One config = one tokenizer kind, so a fair comparison is a **pair** of configs
+that are identical except for `name` and `tokenizer.kind` — keeping that pair in sync
+by hand is what keeps the comparison fair. `experiment.py` parses a config into frozen
+dataclasses (`DataCfg`, `TokenizerCfg`, `PretrainCfg`, `EvalCfg`); a missing/invalid
+`tokenizer.kind` raises, unknown YAML keys raise, omitted keys use the dataclass
+defaults. To add an experiment, copy a config *pair* and change `name:`,
+`tokenizer.kind:`, + the fields.
 
-All artifacts are **namespaced by experiment name** (which encodes the variant) so
-experiments don't clobber each other: `data/<exp>/{raw,caseops}/`, `tokenizers/<exp>/`,
-`runs/<exp>/` (path helpers in `config.py`; only the text dir branches on the variant,
-since `data.py` writes both transforms). `eval_bpb` appends one row per run to
+Tokenizers and runs are **namespaced by experiment name** so experiments don't clobber
+each other: `tokenizers/<exp>/`, `runs/<exp>/`. The **corpus is namespaced by a dataset
+key** (`ExperimentConfig.data_key`, derived from the doc counts + `min_chars` + `marker`)
+so experiments that ask for the same data share one `data/<key>/{raw,caseops}/` tree
+instead of regenerating it — e.g. all of `base/bert/deberta/modernbert` reuse a single
+copy, and `data.py` is a no-op when that copy exists (`--force` to rebuild). Within a
+tree only the text dir branches on the tokenizer kind, since `data.py` writes both
+transforms (path helpers in `config.py`). `eval_bpb` appends one row per run to
 `results/bpb_summary.tsv` (tab-separated; header in `eval_bpb.RESULT_COLUMNS`) tagging the
-experiment, variant, key config fields, and metrics. `data/`, `tokenizers/`, `runs/` are
+experiment, tokenizer, key config fields, and metrics. `data/`, `tokenizers/`, `runs/` are
 gitignored and regenerated; `configs/` and `results/` are tracked.
 
 ## Pipeline architecture
@@ -63,7 +68,7 @@ State passes between stages as **files on disk** at the namespaced paths above.
    cleans it, and writes *both* `data/<exp>/raw/{train,eval}.txt` and
    `data/<exp>/caseops/{train,eval}.txt` from the **same source docs**. This shared origin
    is what makes BPB comparable. It verifies CaseOps round-trips on every doc.
-2. **`train_tokenizer.py`** — trains an identical-config BPE tokenizer per variant; the
+2. **`train_tokenizer.py`** — trains an identical-config BPE tokenizer per kind; the
    *only* input difference is raw vs CaseOps text. NFC normalize, no lowercasing.
 3. **`pretrain.py`** — trains a small MLM from scratch. The encoder architecture is
    chosen by `pretrain.arch` (`bert` → `BertForMaskedLM`, `modernbert` →
@@ -93,7 +98,7 @@ letters that round-trip exactly through `.lower()/.upper()` are folded. `decode(
 
 - **Keep the two variants symmetric.** Any new stage or hyperparameter must apply
   identically to `baseline` and `caseops`, or the BPB comparison is invalid. Since
-  each variant is now its own config, a new field must be added to *both* configs of
+  each tokenizer kind is now its own config, a new field must be added to *both* configs of
   a pair with the same value.
 - **transformers is v5.x** — `overwrite_output_dir` is gone; `warmup_ratio` is
   deprecated. Don't reintroduce removed args.

@@ -7,7 +7,7 @@
 #SBATCH --mem=32G
 #SBATCH --time=02:00:00
 # Submit with: sbatch scripts/slurm.sh [configs/<exp>.yml ...]  (default: base pair)
-# Each config is one variant; a comparison is a pair run through every stage.
+# Each config is one tokenizer kind; a comparison is a pair run through every stage.
 # Adjust --partition / account flags for your cluster as needed.
 set -euo pipefail
 cd "$SLURM_SUBMIT_DIR"

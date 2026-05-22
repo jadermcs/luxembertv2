@@ -1,9 +1,8 @@
-# DeBERTa-v2 variant of the GPU experiment (scripts/slurm.sh), CaseOps text.
+# DeBERTa-v2 version of the GPU experiment (scripts/slurm.sh), CaseOps text.
 # Identical sizing to base-caseops.yml -- the change under test here is the encoder
 # architecture (pretrain.arch: deberta vs bert). Keep every field in sync with
-# deberta-baseline.yml -- only `name` and `variant` may differ.
+# deberta-baseline.yml -- only `name` and `tokenizer.kind` may differ.
 name: deberta-caseops
-variant: caseops
 marker: "↑"
 
 data:
@@ -11,6 +10,7 @@ data:
   eval_docs: 3000
 
 tokenizer:
+  kind: caseops
   vocab_size: 32000
 
 pretrain:

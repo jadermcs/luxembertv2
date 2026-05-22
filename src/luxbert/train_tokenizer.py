@@ -1,6 +1,6 @@
-"""Train a BPE tokenizer for one variant (baseline raw text or CaseOps text).
+"""Train a BPE tokenizer for one kind (baseline raw text or CaseOps text).
 
-Both variants use the *identical* algorithm/config — the only difference is the
+Both kinds use the *identical* algorithm/config — the only difference is the
 input text — so any downstream gap is attributable to CaseOps, not tokenizer
 hyper-parameters.
 """
@@ -16,8 +16,8 @@ from luxbert import config, experiment
 SPECIALS = ["[PAD]", "[UNK]", "[CLS]", "[SEP]", "[MASK]"]
 
 
-def train_one(exp: str, variant: str, vocab_size: int) -> None:
-    train_file = str(config.text_dir(exp, variant) / "train.txt")
+def train_one(exp: str, data_key: str, kind: str, vocab_size: int) -> None:
+    train_file = str(config.text_dir(data_key, kind) / "train.txt")
 
     tok = Tokenizer(models.BPE(unk_token="[UNK]", byte_fallback=True))
     # NFC only: do NOT lowercase. For CaseOps, casing is already encoded as the
@@ -40,7 +40,7 @@ def train_one(exp: str, variant: str, vocab_size: int) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path = out_dir / "tokenizer.json"
     tok.save(str(out_path))
-    print(f"[{exp}/{variant}] vocab={tok.get_vocab_size()} -> {out_path}")
+    print(f"[{exp}/{kind}] vocab={tok.get_vocab_size()} -> {out_path}")
 
 
 def main() -> None:
@@ -49,7 +49,7 @@ def main() -> None:
     args = ap.parse_args()
 
     cfg = experiment.load(args.config)
-    train_one(cfg.name, cfg.variant, cfg.tokenizer.vocab_size)
+    train_one(cfg.name, cfg.data_key, cfg.tokenizer.kind, cfg.tokenizer.vocab_size)
 
 
 if __name__ == "__main__":

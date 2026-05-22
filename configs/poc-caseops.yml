@@ -1,8 +1,7 @@
-# Small proof-of-concept experiment (CPU-runnable), CaseOps variant. Keep every
-# field below in sync with poc-baseline.yml -- only `name` and `variant` may differ,
+# Small proof-of-concept experiment (CPU-runnable), CaseOps tokenizer. Keep every
+# field below in sync with poc-baseline.yml -- only `name` and `tokenizer.kind` may differ,
 # or the bits-per-byte comparison is no longer fair.
 name: poc-caseops
-variant: caseops
 marker: "↑"
 
 data:
@@ -11,6 +10,7 @@ data:
   min_chars: 64
 
 tokenizer:
+  kind: caseops
   vocab_size: 16000
 
 pretrain:
