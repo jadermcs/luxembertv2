@@ -1,4 +1,4 @@
-timestamp	experiment	variant	arch	vocab_size	layers	hidden	heads	intermediate	optim	lr	epochs	train_docs	lines	bytes	tokens	tokens_per_byte	nats_per_token	bpb
+timestamp	experiment	tokenizer	arch	vocab_size	layers	hidden	heads	intermediate	optim	lr	epochs	train_docs	lines	bytes	tokens	tokens_per_byte	nats_per_token	bpb
 2026-05-21T03:47:50+00:00	poc	baseline	bert	16000	4	256	4	1024	adamw_torch	0.0005	3	50000	300	865117	210449	0.243261	3.940713	1.382997
 2026-05-21T03:49:21+00:00	poc	caseops	bert	16000	4	256	4	1024	adamw_torch	0.0005	3	50000	300	865117	244021	0.282067	3.437638	1.398901
 2026-05-21T14:01:22+00:00	base	baseline	bert	32000	8	512	8	2048	adamw_torch	0.0005	5	200000	1000	2642570	584139	0.221050	2.393920	0.763438

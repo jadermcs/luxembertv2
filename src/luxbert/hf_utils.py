@@ -19,5 +19,5 @@ def load_tokenizer(experiment: str) -> PreTrainedTokenizerFast:
     )
 
 
-def text_file(experiment: str, variant: str, split: str) -> str:
-    return str(config.text_dir(experiment, variant) / f"{split}.txt")
+def text_file(data_key: str, kind: str, split: str) -> str:
+    return str(config.text_dir(data_key, kind) / f"{split}.txt")

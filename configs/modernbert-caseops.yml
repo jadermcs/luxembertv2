@@ -1,9 +1,8 @@
-# ModernBERT variant of the GPU experiment (scripts/slurm.sh), CaseOps text.
+# ModernBERT version of the GPU experiment (scripts/slurm.sh), CaseOps text.
 # Identical sizing to base-caseops.yml -- the change under test here is the encoder
 # architecture (pretrain.arch: modernbert vs bert). Keep every field in sync with
-# modernbert-baseline.yml -- only `name` and `variant` may differ.
+# modernbert-baseline.yml -- only `name` and `tokenizer.kind` may differ.
 name: modernbert-caseops
-variant: caseops
 marker: "↑"
 
 data:
@@ -11,6 +10,7 @@ data:
   eval_docs: 3000
 
 tokenizer:
+  kind: caseops
   vocab_size: 32000
 
 pretrain:

@@ -1,7 +1,11 @@
 """Prepare fineweb-2 ``ltz_Latn`` text: raw + CaseOps-transformed train/eval.
 
-Both variants are derived from the *same* original text so that bits-per-byte
-(normalized by original utf-8 bytes) is a fair comparison later.
+Both tokenizer kinds are derived from the *same* original text so that
+bits-per-byte (normalized by original utf-8 bytes) is a fair comparison later.
+
+The corpus is written under ``data/<data_key>/`` (see
+``ExperimentConfig.data_key``), so experiments that request the same data share
+one copy. If that copy already exists this stage is a no-op unless ``--force``.
 """
 
 from __future__ import annotations
@@ -30,19 +34,32 @@ def clean(text: str) -> str:
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--config", required=True, help="path to a configs/*.yml file")
+    ap.add_argument(
+        "--force",
+        action="store_true",
+        help="regenerate even if the shared corpus already exists",
+    )
     args = ap.parse_args()
 
     cfg = experiment.load(args.config)
     co = CaseOps(marker=cfg.marker)
-    raw_root = config.raw_dir(cfg.name)
-    caseops_root = config.caseops_dir(cfg.name)
-    raw_root.mkdir(parents=True, exist_ok=True)
-    caseops_root.mkdir(parents=True, exist_ok=True)
+    raw_root = config.raw_dir(cfg.data_key)
+    caseops_root = config.caseops_dir(cfg.data_key)
 
     splits = {
         "train": (cfg.data.train_docs, "train"),
         "eval": (cfg.data.eval_docs, "test"),
     }
+
+    expected = [
+        root / f"{name}.txt" for root in (raw_root, caseops_root) for name in splits
+    ]
+    if not args.force and all(p.exists() for p in expected):
+        print(f"[data] reusing existing corpus -> data/{cfg.data_key}/ (use --force to rebuild)")
+        return
+
+    raw_root.mkdir(parents=True, exist_ok=True)
+    caseops_root.mkdir(parents=True, exist_ok=True)
 
     rt_fail = 0
     for name, (n_docs, hf_split) in splits.items():

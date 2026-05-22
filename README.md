@@ -35,11 +35,11 @@ for in the numerator. **Lower BPB wins.**
 > wheel, e.g. `uv pip install "torch" --index-url https://download.pytorch.org/whl/cu128`.
 
 An experiment is fully described by a config file in [`configs/`](configs)
-(hyperparameters: vocab size, layers, optimizer, …) plus a required `variant:`
-(`baseline` or `caseops`). One config = one variant, so a fair comparison is a
-**pair** of configs identical except for `name`/`variant`
-(e.g. `poc-baseline.yml` / `poc-caseops.yml`). Each `eval_bpb` run appends a row
-to [`results/bpb_summary.tsv`](results/bpb_summary.tsv).
+(hyperparameters: vocab size, layers, optimizer, …) plus a required
+`tokenizer.kind` (`baseline` or `caseops`). One config = one tokenizer kind, so a
+fair comparison is a **pair** of configs identical except for `name` /
+`tokenizer.kind` (e.g. `poc-baseline.yml` / `poc-caseops.yml`). Each `eval_bpb`
+run appends a row to [`results/bpb_summary.tsv`](results/bpb_summary.tsv).
 
 ```bash
 uv sync
@@ -62,18 +62,19 @@ uv run python -m luxbert.eval_bpb        --config configs/poc-baseline.yml
 ```
 
 To add an experiment, copy a config *pair*, change `name:` and the
-hyperparameters in both (keeping `variant:` distinct), and run them — artifacts
-and results are namespaced by `name`.
+hyperparameters in both (keeping `tokenizer.kind` distinct), and run them —
+tokenizers/runs are namespaced by `name`, while the corpus is shared across
+experiments that request the same data.
 
 ## Layout
 
 | Path | What |
 |---|---|
-| `configs/*.yml` | experiment hyperparameters (one file = one experiment+variant) |
+| `configs/*.yml` | experiment hyperparameters (one file = one experiment+tokenizer) |
 | `src/luxbert/experiment.py` | loads a config into typed dataclasses |
 | `src/luxbert/caseops.py` | reversible CaseOps transform (+ `tests/`) |
 | `src/luxbert/data.py` | fineweb-2 `ltz_Latn` -> raw + caseops text |
-| `src/luxbert/train_tokenizer.py` | BPE tokenizer per variant |
+| `src/luxbert/train_tokenizer.py` | BPE tokenizer per kind |
 | `src/luxbert/pretrain.py` | small BERT MLM trainer |
 | `src/luxbert/eval_bpb.py` | pseudo-log-likelihood BPB -> `results/bpb_summary.tsv` |
 | `scripts/run.sh` / `slurm.sh` | end-to-end runners (take config paths) |

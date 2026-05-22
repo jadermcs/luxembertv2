@@ -1,11 +1,15 @@
-"""Shared dataset constants and per-experiment path resolution.
+"""Shared dataset constants and path resolution.
 
-Every artifact is namespaced by the experiment name (the config file's ``name``)
-so distinct experiments never clobber each other's data/tokenizers/models, and
-``results/bpb_summary.tsv`` can attribute each row to a specific config. Since
-each config carries its own ``variant`` and the ``name`` encodes it (e.g.
-``poc-baseline`` / ``poc-caseops``), tokenizer/run paths key on ``name`` alone;
-only the text dir still branches on the variant (raw vs CaseOps text).
+Tokenizers and runs are namespaced by the experiment name (the config file's
+``name``) so distinct experiments never clobber each other's tokenizers/models,
+and ``results/bpb_summary.tsv`` can attribute each row to a specific config.
+
+The corpus, however, is namespaced by a **dataset key** derived purely from the
+data-shaping fields (doc counts, ``min_chars``, ``marker``) — see
+``ExperimentConfig.data_key``. Experiments that ask for the same data therefore
+share one ``data/<key>/`` tree instead of each regenerating an identical copy.
+Within that tree only the text dir branches on the tokenizer kind (raw for
+``baseline``, CaseOps text otherwise).
 """
 
 from __future__ import annotations
@@ -24,25 +28,25 @@ RESULTS_TSV = RESULTS / "bpb_summary.tsv"
 HF_DATASET = "HuggingFaceFW/fineweb-2"
 HF_SUBSET = "ltz_Latn"
 
-VARIANTS = ("baseline", "caseops")
+TOKENIZER_KINDS = ("baseline", "caseops")
 
 
-def _check_variant(variant: str) -> None:
-    assert variant in VARIANTS, variant
+def _check_kind(kind: str) -> None:
+    assert kind in TOKENIZER_KINDS, kind
 
 
-def raw_dir(experiment: str) -> Path:
-    return DATA / experiment / "raw"
+def raw_dir(data_key: str) -> Path:
+    return DATA / data_key / "raw"
 
 
-def caseops_dir(experiment: str) -> Path:
-    return DATA / experiment / "caseops"
+def caseops_dir(data_key: str) -> Path:
+    return DATA / data_key / "caseops"
 
 
-def text_dir(experiment: str, variant: str) -> Path:
-    """Where a variant's train/eval text lives (raw for baseline, caseops else)."""
-    _check_variant(variant)
-    return raw_dir(experiment) if variant == "baseline" else caseops_dir(experiment)
+def text_dir(data_key: str, kind: str) -> Path:
+    """Where a tokenizer kind's train/eval text lives (raw for baseline, caseops else)."""
+    _check_kind(kind)
+    return raw_dir(data_key) if kind == "baseline" else caseops_dir(data_key)
 
 
 def tokenizer_dir(experiment: str) -> Path:

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# End-to-end CaseOps vs. baseline comparison. Each config is one variant, so a
+# End-to-end CaseOps vs. baseline comparison. Each config is one tokenizer kind, so a
 # comparison is a pair of configs run through every stage. Runs with `uv`.
 # Usage: scripts/run.sh [configs/<exp>.yml ...]  (default: the poc pair)
 set -euo pipefail
