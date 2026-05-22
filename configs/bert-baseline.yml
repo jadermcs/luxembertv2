@@ -1,0 +1,27 @@
+# Larger experiment for the GPU cluster (scripts/slurm.sh), baseline variant.
+# Keep every field below in sync with base-caseops.yml -- only `name` and `variant`
+# may differ. Unspecified fields fall back to the defaults in luxbert/experiment.py.
+name: base-baseline
+variant: baseline
+marker: "↑"
+
+data:
+  train_docs: 200000
+  eval_docs: 3000
+
+tokenizer:
+  vocab_size: 32000
+
+pretrain:
+  block_size: 128
+  hidden: 512
+  layers: 8
+  heads: 8
+  intermediate: 2048
+  optim: adamw_torch
+  lr: 0.0005
+  batch_size: 128
+  epochs: 5
+
+eval:
+  max_lines: 1000
