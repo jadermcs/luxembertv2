@@ -7,8 +7,8 @@ from transformers import PreTrainedTokenizerFast
 from luxbert import config
 
 
-def load_tokenizer(experiment: str, variant: str) -> PreTrainedTokenizerFast:
-    path = config.tokenizer_dir(experiment, variant) / "tokenizer.json"
+def load_tokenizer(experiment: str) -> PreTrainedTokenizerFast:
+    path = config.tokenizer_dir(experiment) / "tokenizer.json"
     return PreTrainedTokenizerFast(
         tokenizer_file=str(path),
         unk_token="[UNK]",

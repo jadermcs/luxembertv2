@@ -36,7 +36,7 @@ def train_one(exp: str, variant: str, vocab_size: int) -> None:
     )
     tok.train([train_file], trainer)
 
-    out_dir = config.tokenizer_dir(exp, variant)
+    out_dir = config.tokenizer_dir(exp)
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path = out_dir / "tokenizer.json"
     tok.save(str(out_path))
@@ -46,13 +46,10 @@ def train_one(exp: str, variant: str, vocab_size: int) -> None:
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--config", required=True, help="path to a configs/*.yml file")
-    ap.add_argument("--variant", choices=config.VARIANTS + ("both",), default="both")
     args = ap.parse_args()
 
     cfg = experiment.load(args.config)
-    variants = config.VARIANTS if args.variant == "both" else (args.variant,)
-    for v in variants:
-        train_one(cfg.name, v, cfg.tokenizer.vocab_size)
+    train_one(cfg.name, cfg.variant, cfg.tokenizer.vocab_size)
 
 
 if __name__ == "__main__":

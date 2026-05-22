@@ -1,12 +1,15 @@
 """Experiment configuration loaded from ``configs/*.yml``.
 
-One config file describes one experiment and is applied *identically* to both
-the ``baseline`` and ``caseops`` variants — the variant is chosen at run time,
-not stored in the config — which is what keeps the bits-per-byte comparison fair.
+One config file describes one experiment *and one variant* (``baseline`` or
+``caseops``); the variant is a required field, not a CLI flag. A fair bits-per-byte
+comparison is therefore a pair of configs that are byte-for-byte identical except
+for ``variant`` (and ``name``), e.g. ``poc-baseline.yml`` / ``poc-caseops.yml`` —
+keep that pair in sync.
 
 Schema (all sections optional; omitted fields fall back to the defaults below)::
 
-    name: poc                 # defaults to the file stem
+    name: poc-baseline        # defaults to the file stem
+    variant: baseline         # required: baseline | caseops
     marker: "↑"
     data:      {train_docs, eval_docs, min_chars}
     tokenizer: {vocab_size}
@@ -24,6 +27,7 @@ from pathlib import Path
 import yaml
 
 from luxbert.caseops import DEFAULT_MARKER
+from luxbert.config import VARIANTS
 
 
 @dataclass(frozen=True)
@@ -68,6 +72,7 @@ class EvalCfg:
 @dataclass(frozen=True)
 class ExperimentConfig:
     name: str
+    variant: str
     marker: str = DEFAULT_MARKER
     data: DataCfg = field(default_factory=DataCfg)
     tokenizer: TokenizerCfg = field(default_factory=TokenizerCfg)
@@ -79,8 +84,14 @@ def load(path: str | Path) -> ExperimentConfig:
     """Parse a YAML experiment config, validating that no unknown keys slip in."""
     path = Path(path)
     raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    variant = raw.get("variant")
+    if variant not in VARIANTS:
+        raise ValueError(
+            f"{path}: 'variant' must be one of {VARIANTS}, got {variant!r}"
+        )
     return ExperimentConfig(
         name=raw.get("name", path.stem),
+        variant=variant,
         marker=raw.get("marker", DEFAULT_MARKER),
         data=DataCfg(**raw.get("data", {})),
         tokenizer=TokenizerCfg(**raw.get("tokenizer", {})),

@@ -7,8 +7,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 A controlled experiment for a data-efficient Luxembourgish (LB) encoder. The first
 ablation, **CaseOps**, tests whether re-encoding casing as an explicit token helps a
 low-resource MLM. The whole point is a *fair head-to-head*: two pipeline variants
-(`baseline` vs `caseops`) that are byte-for-byte identical except for the one change
-under test, judged by **bits-per-byte (BPB)**. Preserve that symmetry when extending.
+(`baseline` vs `caseops`), each its own config, that are byte-for-byte identical
+except for the one change under test, judged by **bits-per-byte (BPB)**. Preserve
+that symmetry when extending.
 
 - `IDEAS.md` — research motivation and the broader roadmap.
 - `EVALUATION.md` — the downstream benchmark suite (POS, NER, SIB-200, NLI, Belebele,
@@ -23,29 +24,32 @@ uv sync                                     # install deps into .venv
 uv run --extra dev pytest                    # run tests (pytest is in the dev extra)
 uv run --extra dev pytest tests/test_caseops.py::test_roundtrip_simple   # single test
 
-scripts/run_poc.sh configs/poc.yml          # full pipeline locally
-sbatch scripts/slurm_poc.sh configs/base.yml  # full pipeline on the GPU cluster
+scripts/run.sh                              # full pipeline locally (poc pair)
+sbatch scripts/slurm.sh                       # full pipeline on the GPU cluster (base pair)
 ```
 
 Individual stages (all under `uv run python -m luxbert.<module>`): `data` →
-`train_tokenizer` → `pretrain` → `eval_bpb`. **Every stage takes `--config
-configs/<exp>.yml`**; the model stages also take `--variant baseline|caseops`
-(`train_tokenizer` also accepts `both`). See `scripts/run_poc.sh` for the order.
+`train_tokenizer` → `pretrain` → `eval_bpb`. **Every stage takes one `--config
+configs/<exp>.yml`** and nothing else — the variant is read from the config, not
+a flag. See `scripts/run.sh` for the order; it runs the stages once per config.
 
 ## Experiments and configs
 
-An experiment is one YAML file in `configs/` (e.g. `poc.yml`, `base.yml`, `modernbert.yml`)
-holding all hyperparameters (vocab size, layers/hidden/heads, optimizer, lr, epochs,
-`pretrain.arch`, …). `name:`
-defaults to the file stem. The **same config is applied to both variants** — the variant
-is a CLI flag, never stored in the config — which is what keeps the comparison fair.
-`experiment.py` parses a config into frozen dataclasses (`DataCfg`, `TokenizerCfg`,
-`PretrainCfg`, `EvalCfg`); unknown YAML keys raise, omitted keys use the dataclass
-defaults. To add an experiment, copy a config and change `name:` + the fields.
+An experiment+variant is one YAML file in `configs/` (e.g. `poc-baseline.yml`,
+`poc-caseops.yml`, `base-*.yml`, `modernbert-*.yml`) holding all hyperparameters
+(vocab size, layers/hidden/heads, optimizer, lr, epochs, `pretrain.arch`, …) plus a
+**required `variant:`** (`baseline` or `caseops`). `name:` defaults to the file stem.
+One config = one variant, so a fair comparison is a **pair** of configs that are
+identical except for `name` and `variant` — keeping that pair in sync by hand is what
+keeps the comparison fair. `experiment.py` parses a config into frozen dataclasses
+(`DataCfg`, `TokenizerCfg`, `PretrainCfg`, `EvalCfg`); a missing/invalid `variant`
+raises, unknown YAML keys raise, omitted keys use the dataclass defaults. To add an
+experiment, copy a config *pair* and change `name:`, `variant:`, + the fields.
 
-All artifacts are **namespaced by experiment name** so experiments don't clobber each
-other: `data/<exp>/{raw,caseops}/`, `tokenizers/<exp>/<variant>/`, `runs/<exp>/<variant>/`
-(path helpers in `config.py`). `eval_bpb` appends one row per run to
+All artifacts are **namespaced by experiment name** (which encodes the variant) so
+experiments don't clobber each other: `data/<exp>/{raw,caseops}/`, `tokenizers/<exp>/`,
+`runs/<exp>/` (path helpers in `config.py`; only the text dir branches on the variant,
+since `data.py` writes both transforms). `eval_bpb` appends one row per run to
 `results/bpb_summary.tsv` (tab-separated; header in `eval_bpb.RESULT_COLUMNS`) tagging the
 experiment, variant, key config fields, and metrics. `data/`, `tokenizers/`, `runs/` are
 gitignored and regenerated; `configs/` and `results/` are tracked.
@@ -88,7 +92,9 @@ letters that round-trip exactly through `.lower()/.upper()` are folded. `decode(
 ## Conventions and gotchas
 
 - **Keep the two variants symmetric.** Any new stage or hyperparameter must apply
-  identically to `baseline` and `caseops`, or the BPB comparison is invalid.
+  identically to `baseline` and `caseops`, or the BPB comparison is invalid. Since
+  each variant is now its own config, a new field must be added to *both* configs of
+  a pair with the same value.
 - **transformers is v5.x** — `overwrite_output_dir` is gone; `warmup_ratio` is
   deprecated. Don't reintroduce removed args.
 - **Real training runs on the SLURM GPU cluster, not the login node.** The login node's

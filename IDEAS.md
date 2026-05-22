@@ -21,10 +21,12 @@ _italics_); `- [ ]` = not yet implemented. Partial coverage is noted explicitly.
 
 - [ ] 🔥 **ELECTRA (Replaced Token Detection)** — discriminate real vs. generator-replaced tokens.
   Learns from *all* positions, not just 15% masked → 3–4× more sample-efficient than MLM. Ideal
-  for low data. (Clark et al. 2020)
+  for low data. New `pretrain.arch: electra` (`ElectraForPreTraining` + a small generator).
+  (Clark et al. 2020)
 - [ ] 🔥 **DeBERTa-v3 (RTD + Gradient-Disentangled Embedding Sharing)** — current SOTA for
   sample-efficient encoders; combines disentangled attention with ELECTRA-style RTD. Strong
-  default to beat. (He et al. 2021)
+  default to beat. New `pretrain.arch: deberta-v3` (`DebertaV2ForMaskedLM` / RTD setup).
+  (He et al. 2021)
 - [x] ⚙️ **RoBERTa / BERT MLM** — robust baseline; the control everything is measured against.
   _(→ `poc.yml`, `base.yml`: `pretrain.arch: bert`, MLM objective)_
 - [ ] ⚙️ **Masking strategy sweep**: whole-word masking, **SpanBERT** span masking, **PMI/n-gram
@@ -68,6 +70,11 @@ _italics_); `- [ ]` = not yet implemented. Partial coverage is noted explicitly.
 - [x] ⚙️ **ModernBERT recipe** — RoPE positions, GeGLU, alternating local/global attention, no
   bias terms, unpadding/sequence-packing. Modern, efficient, good defaults. (Warner et al. 2024)
   _(→ `modernbert.yml`: `pretrain.arch: modernbert`)_
+- [ ] 🔥 **ALBERT** — cross-layer **parameter sharing** + **factorized embedding parameterization**
+  (decouple vocab embedding size E from hidden H), trained with SOP. Far fewer parameters to learn
+  → strong fit for low-resource: less to overfit, and the factorized embeddings ease the rare-LB-
+  embedding burden (pairs with the §E vocab-size idea). Would be a new `pretrain.arch: albert`
+  (`AlbertForMaskedLM`). (Lan et al. 2019, arXiv:1909.11942)
 - [ ] ⚙️ **RoPE** vs **ALiBi** vs **relative (T5/DeBERTa)** positional encodings — sweep; affects
   length generalization on short LB web text. (RoPE used in `modernbert.yml`, not yet swept.)
 - [ ] 🔥 **AttnRes — Attention Residuals** (Moonshot AI / Kimi, 2026) — **drop-in replacement for
@@ -182,6 +189,7 @@ change.
 - ELECTRA: <https://arxiv.org/abs/2003.10555>
 - DeBERTa / DeBERTa-v3: <https://arxiv.org/abs/2006.03654> · <https://arxiv.org/abs/2111.09543>
 - ModernBERT: <https://arxiv.org/abs/2412.13663>
+- ALBERT: <https://arxiv.org/abs/1909.11942>
 - AttnRes — Attention Residuals (Kimi/Moonshot): <https://nerdschalk.com/moonshot-ais-attention-residuals-for-kimi-could-change-how-ai-models-use-layers/>
 - XSA — Exclusive Self-Attention (Apple): <https://arxiv.org/abs/2603.09078>
 - Muon optimizer: <https://kellerjordan.github.io/posts/muon/>

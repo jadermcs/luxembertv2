@@ -35,43 +35,45 @@ for in the numerator. **Lower BPB wins.**
 > wheel, e.g. `uv pip install "torch" --index-url https://download.pytorch.org/whl/cu128`.
 
 An experiment is fully described by a config file in [`configs/`](configs)
-(hyperparameters: vocab size, layers, optimizer, …). The same config is run for
-both variants; each `eval_bpb` run appends a row to
-[`results/bpb_summary.tsv`](results/bpb_summary.tsv).
+(hyperparameters: vocab size, layers, optimizer, …) plus a required `variant:`
+(`baseline` or `caseops`). One config = one variant, so a fair comparison is a
+**pair** of configs identical except for `name`/`variant`
+(e.g. `poc-baseline.yml` / `poc-caseops.yml`). Each `eval_bpb` run appends a row
+to [`results/bpb_summary.tsv`](results/bpb_summary.tsv).
 
 ```bash
 uv sync
 
-# quick PoC (CPU-ok; GPU recommended)
-scripts/run_poc.sh configs/poc.yml
+# quick PoC (CPU-ok; GPU recommended) — runs the poc baseline+caseops pair
+scripts/run.sh
 
-# on the cluster (larger config)
-sbatch scripts/slurm_poc.sh configs/base.yml
+# on the cluster (larger config) — runs the base pair
+sbatch scripts/slurm.sh
 ```
 
-Individual steps (all take `--config`):
+Individual steps (each takes a single `--config`):
 
 ```bash
-uv run python -m luxbert.data --config configs/poc.yml
-uv run python -m luxbert.train_tokenizer --config configs/poc.yml --variant both
-uv run python -m luxbert.pretrain --config configs/poc.yml --variant baseline
-uv run python -m luxbert.pretrain --config configs/poc.yml --variant caseops
-uv run python -m luxbert.eval_bpb --config configs/poc.yml --variant baseline
-uv run python -m luxbert.eval_bpb --config configs/poc.yml --variant caseops
+uv run python -m luxbert.data            --config configs/poc-baseline.yml
+uv run python -m luxbert.train_tokenizer --config configs/poc-baseline.yml
+uv run python -m luxbert.pretrain        --config configs/poc-baseline.yml
+uv run python -m luxbert.eval_bpb        --config configs/poc-baseline.yml
+# …then repeat with configs/poc-caseops.yml for the other half of the comparison
 ```
 
-To add an experiment, copy a config, change `name:` and the hyperparameters, and
-run it — artifacts and results are namespaced by `name`.
+To add an experiment, copy a config *pair*, change `name:` and the
+hyperparameters in both (keeping `variant:` distinct), and run them — artifacts
+and results are namespaced by `name`.
 
 ## Layout
 
 | Path | What |
 |---|---|
-| `configs/*.yml` | experiment hyperparameters (one file = one experiment) |
+| `configs/*.yml` | experiment hyperparameters (one file = one experiment+variant) |
 | `src/luxbert/experiment.py` | loads a config into typed dataclasses |
 | `src/luxbert/caseops.py` | reversible CaseOps transform (+ `tests/`) |
 | `src/luxbert/data.py` | fineweb-2 `ltz_Latn` -> raw + caseops text |
 | `src/luxbert/train_tokenizer.py` | BPE tokenizer per variant |
 | `src/luxbert/pretrain.py` | small BERT MLM trainer |
 | `src/luxbert/eval_bpb.py` | pseudo-log-likelihood BPB -> `results/bpb_summary.tsv` |
-| `scripts/run_poc.sh` / `slurm_poc.sh` | end-to-end runners (take a config path) |
+| `scripts/run.sh` / `slurm.sh` | end-to-end runners (take config paths) |

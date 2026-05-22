@@ -186,21 +186,20 @@ class PackedMLMCollator(DataCollatorForLanguageModeling):
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--config", required=True, help="path to a configs/*.yml file")
-    ap.add_argument("--variant", choices=config.VARIANTS, required=True)
     args = ap.parse_args()
 
     cfg = experiment.load(args.config)
     pc = cfg.pretrain
 
-    tokenizer = load_tokenizer(cfg.name, args.variant)
+    tokenizer = load_tokenizer(cfg.name)
     ds = build_dataset(
         tokenizer,
-        text_file(cfg.name, args.variant, "train"),
+        text_file(cfg.name, cfg.variant, "train"),
         pc.block_size,
         pc.num_proc,
         pc.arch,
     )
-    tag = f"{cfg.name}/{args.variant}"
+    tag = f"{cfg.name}/{cfg.variant}"
     print(f"[{tag}] {len(ds)} blocks of {pc.block_size} tokens")
 
     model = build_model(pc, tokenizer)
@@ -213,7 +212,7 @@ def main() -> None:
     )
     collator = collator_cls(tokenizer=tokenizer, mlm=True, mlm_probability=pc.mlm_prob)
 
-    out_dir = config.run_dir(cfg.name, args.variant)
+    out_dir = config.run_dir(cfg.name)
     targs = TrainingArguments(
         output_dir=str(out_dir),
         per_device_train_batch_size=pc.batch_size,
@@ -225,10 +224,10 @@ def main() -> None:
         weight_decay=pc.weight_decay,
         logging_steps=50,
         save_strategy="no",
-        report_to="none",
+        report_to="wandb",
         seed=pc.seed,
         bf16=False,
-        dataloader_num_workers=2,
+        dataloader_num_workers=4,
     )
     trainer = Trainer(
         model=model, args=targs, train_dataset=ds, data_collator=collator

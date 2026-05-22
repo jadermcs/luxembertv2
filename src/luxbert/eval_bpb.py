@@ -89,8 +89,7 @@ def seq_pll_nats(model, mask_id, input_ids, device, micro_batch) -> float:
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--config", required=True, help="path to a configs/*.yml file")
-    ap.add_argument("--variant", choices=config.VARIANTS, required=True)
-    ap.add_argument("--model-dir", default=None, help="defaults to runs/<exp>/<variant>")
+    ap.add_argument("--model-dir", default=None, help="defaults to runs/<exp>")
     ap.add_argument("--eval-file", default=None, help="defaults to data/<exp>/raw/eval.txt")
     args = ap.parse_args()
 
@@ -98,10 +97,10 @@ def main() -> None:
     ec = cfg.eval
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    model_dir = args.model_dir or str(config.run_dir(cfg.name, args.variant))
+    model_dir = args.model_dir or str(config.run_dir(cfg.name))
     eval_file = args.eval_file or str(config.raw_dir(cfg.name) / "eval.txt")
 
-    tokenizer = load_tokenizer(cfg.name, args.variant)
+    tokenizer = load_tokenizer(cfg.name)
     model = AutoModelForMaskedLM.from_pretrained(model_dir).to(device).eval()
     mask_id = tokenizer.mask_token_id
     co = CaseOps(marker=cfg.marker)
@@ -116,7 +115,7 @@ def main() -> None:
             if not line:
                 continue
             total_bytes += len(line.encode("utf-8"))  # ORIGINAL bytes, both variants
-            model_text = line if args.variant == "baseline" else co.encode(line)
+            model_text = line if cfg.variant == "baseline" else co.encode(line)
             ids = tokenizer(model_text, add_special_tokens=False)["input_ids"]
             total_tokens += len(ids)
             # Score EVERY token (chunked into context windows of block_size) so the
@@ -133,7 +132,7 @@ def main() -> None:
     bpb = total_nats / math.log(2) / total_bytes
 
     print(f"experiment       : {cfg.name}")
-    print(f"variant          : {args.variant}")
+    print(f"variant          : {cfg.variant}")
     print(f"lines scored     : {n}")
     print(f"original bytes    : {total_bytes}")
     print(f"tokens            : {total_tokens}")
@@ -145,7 +144,7 @@ def main() -> None:
         {
             "timestamp": datetime.now(timezone.utc).isoformat(timespec="seconds"),
             "experiment": cfg.name,
-            "variant": args.variant,
+            "variant": cfg.variant,
             "arch": cfg.pretrain.arch,
             "vocab_size": cfg.tokenizer.vocab_size,
             "layers": cfg.pretrain.layers,
