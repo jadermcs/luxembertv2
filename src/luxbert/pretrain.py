@@ -15,6 +15,8 @@ from transformers import (
     BertConfig,
     BertForMaskedLM,
     DataCollatorForLanguageModeling,
+    DebertaV2Config,
+    DebertaV2ForMaskedLM,
     ModernBertConfig,
     ModernBertForMaskedLM,
     Trainer,
@@ -74,6 +76,7 @@ class PackedModernBertForMaskedLM(ModernBertForMaskedLM):
 ARCHITECTURES = {
     "bert": (BertConfig, BertForMaskedLM),
     "modernbert": (ModernBertConfig, PackedModernBertForMaskedLM),
+    "deberta": (DebertaV2Config, DebertaV2ForMaskedLM),
 }
 
 
@@ -106,6 +109,15 @@ def build_model(pc, tokenizer):
     if pc.arch == "modernbert":
         kwargs["cls_token_id"] = tokenizer.cls_token_id
         kwargs["sep_token_id"] = tokenizer.sep_token_id
+    # DeBERTa's distinguishing feature is disentangled attention over relative
+    # positions, which is off by the config's defaults; turn it on with the
+    # standard DeBERTa-v3 settings so the arch is actually DeBERTa, not a BERT
+    # twin. Identical across variants, so the BPB comparison stays fair.
+    if pc.arch == "deberta":
+        kwargs["relative_attention"] = True
+        kwargs["position_buckets"] = 256
+        kwargs["pos_att_type"] = ["p2c", "c2p"]
+        kwargs["norm_rel_ebd"] = "layer_norm"
     return model_cls(config_cls(**kwargs))
 
 
