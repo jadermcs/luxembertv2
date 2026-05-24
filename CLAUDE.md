@@ -70,12 +70,18 @@ State passes between stages as **files on disk** at the namespaced paths above.
    is what makes BPB comparable. It verifies CaseOps round-trips on every doc.
 2. **`train_tokenizer.py`** — trains an identical-config BPE tokenizer per kind; the
    *only* input difference is raw vs CaseOps text. NFC normalize, no lowercasing.
-3. **`pretrain.py`** — trains a small MLM from scratch. The encoder architecture is
+3. **`pretrain.py`** — trains a small encoder from scratch. The encoder architecture is
    chosen by `pretrain.arch` (`bert` → `BertForMaskedLM`, `modernbert` →
-   `ModernBertForMaskedLM`; default `bert`); see `ARCHITECTURES` / `build_model`.
-   Architecture, objective, and hyperparameters are identical across variants — only the
-   tokenizer and text differ. PoC-sized defaults; the SLURM script overrides with larger
-   model/data.
+   `ModernBertForMaskedLM`, `deberta` → `DebertaV2ForMaskedLM`; default `bert`); see
+   `ARCHITECTURES` / `build_model`. The **training objective** is chosen by
+   `pretrain.objective` (`mlm` default, or `diffusion`): `diffusion` is absorbing-state
+   masked diffusion — `DiffusionCollator` draws a per-example time `t∼U(eps,1)` and masks
+   each token w.p. `t` (linear schedule `α_t=1-t`, pure `[MASK]`, no 80/10/10), and
+   `DiffusionTrainer`/`diffusion_loss` replace MLM's token-mean with the hazard-weighted
+   (`1/t`) NELBO. The model stays a `*ForMaskedLM` denoiser, so eval is unchanged.
+   Architecture, objective, and hyperparameters are identical across the two kinds of a
+   pair — only the tokenizer and text differ. PoC-sized defaults; the SLURM script
+   overrides with larger model/data.
 4. **`eval_bpb.py`** — scores held-out text with pseudo-log-likelihood (mask one token
    at a time), normalized by **original UTF-8 byte count** (not token count). Both
    variants are scored against the same original bytes, so CaseOps' extra marker tokens

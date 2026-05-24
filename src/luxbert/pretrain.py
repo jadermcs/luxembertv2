@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 
 import torch
+import torch.nn.functional as F
 from datasets import load_dataset
 from transformers import (
     BertConfig,
@@ -195,6 +196,88 @@ class PackedMLMCollator(DataCollatorForLanguageModeling):
         return batch
 
 
+class DiffusionCollator:
+    """Absorbing-state (masked) diffusion noising with a linear schedule.
+
+    For each example we draw a diffusion time ``t ~ U(eps, 1)``. Under the linear
+    schedule ``alpha_t = 1 - t`` the per-token survival probability is ``alpha_t``,
+    so a token is masked with probability exactly ``t``. Every chosen token is
+    replaced by ``[MASK]`` -- a *pure* absorbing state, with none of MLM's 80/10/10
+    random/keep corruption -- and we keep ``t`` per example so the loss can apply
+    the hazard weight ``1/t``. Special tokens are never masked, and at least one
+    token is masked per example so every row contributes a gradient.
+
+    ``position_ids`` (the doc-packing signal for modernbert) are carried through
+    unchanged; rows without them (e.g. the bert ``[SEP]`` path) just omit the key.
+    """
+
+    def __init__(self, tokenizer, eps: float):
+        self.mask_id = tokenizer.mask_token_id
+        self.special_ids = torch.tensor(sorted(tokenizer.all_special_ids))
+        self.eps = eps
+
+    def __call__(self, examples):
+        input_ids = torch.tensor([e["input_ids"] for e in examples], dtype=torch.long)
+        B, L = input_ids.shape
+        special = torch.isin(input_ids, self.special_ids)
+
+        t = torch.empty(B).uniform_(self.eps, 1.0)
+        mask = (torch.rand(B, L) < t.unsqueeze(1)) & ~special
+        # Guarantee >=1 masked token per example: where nothing was selected, mask
+        # one uniformly chosen non-special position.
+        empty = ~mask.any(dim=1)
+        for i in empty.nonzero(as_tuple=True)[0].tolist():
+            cand = (~special[i]).nonzero(as_tuple=True)[0]
+            if len(cand):
+                mask[i, cand[torch.randint(len(cand), (1,))]] = True
+
+        labels = input_ids.clone()
+        labels[~mask] = -100  # score only the masked (denoised) positions
+        noised = input_ids.clone()
+        noised[mask] = self.mask_id
+
+        batch = {"input_ids": noised, "labels": labels, "t": t}
+        if "position_ids" in examples[0]:
+            batch["position_ids"] = torch.tensor(
+                [e["position_ids"] for e in examples], dtype=torch.long
+            )
+        return batch
+
+
+def diffusion_loss(logits, labels, t):
+    """Linear-schedule masked-diffusion NELBO (Monte-Carlo over ``t``).
+
+    Each example's cross-entropy is *summed* over its masked positions, then scaled
+    by the absorbing-diffusion hazard ``w(t) = -alpha'_t / (1 - alpha_t) = 1/t``
+    (linear ``alpha_t = 1 - t``), and averaged over the batch. This is the MDLM /
+    MD4 objective at the linear limit; standard MLM would instead take an
+    unweighted token mean.
+    """
+    vocab = logits.size(-1)
+    ce = F.cross_entropy(
+        logits.view(-1, vocab), labels.view(-1), ignore_index=-100, reduction="none"
+    ).view(labels.shape)  # [B, L]; zero at ignored (-100) positions
+    per_example = ce.sum(dim=1)  # sum over masked tokens
+    weight = 1.0 / t.to(per_example.device)  # hazard rate, linear schedule
+    return (weight * per_example).mean()
+
+
+class DiffusionTrainer(Trainer):
+    """Trainer that swaps MLM's token-mean loss for the hazard-weighted diffusion NELBO.
+
+    The model is the same ``ModernBertForMaskedLM`` denoiser; only the loss differs.
+    We pop the per-example time ``t`` and ``labels`` (so the model does not compute
+    its own MLM loss) before delegating to :func:`diffusion_loss`.
+    """
+
+    def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
+        t = inputs.pop("t")
+        labels = inputs.pop("labels")
+        outputs = model(**inputs)
+        loss = diffusion_loss(outputs.logits, labels, t)
+        return (loss, outputs) if return_outputs else loss
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--config", required=True, help="path to a configs/*.yml file")
@@ -217,12 +300,25 @@ def main() -> None:
     model = build_model(pc, tokenizer)
     print(f"[{tag}] arch: {pc.arch}  params: {model.num_parameters()/1e6:.1f}M")
 
-    # modernbert packs documents and isolates them via position_ids; bert relies
-    # on the [SEP] separator build_dataset inserted, so it uses the stock collator.
-    collator_cls = (
-        PackedMLMCollator if pc.arch == "modernbert" else DataCollatorForLanguageModeling
-    )
-    collator = collator_cls(tokenizer=tokenizer, mlm=True, mlm_probability=pc.mlm_prob)
+    # The objective picks both the noising (collator) and the loss (trainer). For
+    # "diffusion" the time-dependent collator carries position_ids itself, so it
+    # works under both the packed (modernbert) and [SEP] (bert) data layouts. For
+    # "mlm", modernbert packs documents and isolates them via position_ids while
+    # bert relies on the [SEP] separator build_dataset inserted (stock collator).
+    if pc.objective == "diffusion":
+        collator = DiffusionCollator(tokenizer, pc.diffusion_eps)
+        trainer_cls = DiffusionTrainer
+    elif pc.objective == "mlm":
+        collator_cls = (
+            PackedMLMCollator if pc.arch == "modernbert" else DataCollatorForLanguageModeling
+        )
+        collator = collator_cls(tokenizer=tokenizer, mlm=True, mlm_probability=pc.mlm_prob)
+        trainer_cls = Trainer
+    else:
+        raise ValueError(
+            f"unknown objective {pc.objective!r}; choose 'mlm' or 'diffusion'"
+        )
+    print(f"[{tag}] objective: {pc.objective}")
 
     out_dir = config.run_dir(cfg.name)
     targs = TrainingArguments(
@@ -241,7 +337,7 @@ def main() -> None:
         bf16=False,
         dataloader_num_workers=4,
     )
-    trainer = Trainer(
+    trainer = trainer_cls(
         model=model, args=targs, train_dataset=ds, data_collator=collator
     )
     trainer.train()

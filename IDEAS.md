@@ -27,10 +27,6 @@ _italics_); `- [ ]` = not yet implemented. Partial coverage is noted explicitly.
   sample-efficient encoders; combines disentangled attention with ELECTRA-style RTD. Strong
   default to beat. New `pretrain.arch: deberta-v3` (`DebertaV2ForMaskedLM` / RTD setup).
   (He et al. 2021)
-- [x] ⚙️ **RoBERTa / BERT MLM** — robust baseline; the control everything is measured against.
-  _(→ `poc.yml`, `base.yml`: `pretrain.arch: bert`, MLM objective)_
-- [ ] ⚙️ **Masking strategy sweep**: whole-word masking, **SpanBERT** span masking, **PMI/n-gram
-  masking**. Span/WWM help morphologically rich, low-data languages.
 - [ ] ⚙️ **Higher mask rate** (30–40%) — recent work shows >15% is often better, especially with
   larger models / RTD generators. Currently fixed at 0.15. (Wettig et al. 2023)
 - [ ] 🧪 **Combined objectives**: MLM+RTD multitask, or **MASS/T5-style** denoising if you want a
@@ -70,13 +66,6 @@ _italics_); `- [ ]` = not yet implemented. Partial coverage is noted explicitly.
 - [x] ⚙️ **ModernBERT recipe** — RoPE positions, GeGLU, alternating local/global attention, no
   bias terms, unpadding/sequence-packing. Modern, efficient, good defaults. (Warner et al. 2024)
   _(→ `modernbert.yml`: `pretrain.arch: modernbert`)_
-- [ ] 🔥 **ALBERT** — cross-layer **parameter sharing** + **factorized embedding parameterization**
-  (decouple vocab embedding size E from hidden H), trained with SOP. Far fewer parameters to learn
-  → strong fit for low-resource: less to overfit, and the factorized embeddings ease the rare-LB-
-  embedding burden (pairs with the §E vocab-size idea). Would be a new `pretrain.arch: albert`
-  (`AlbertForMaskedLM`). (Lan et al. 2019, arXiv:1909.11942)
-- [ ] ⚙️ **RoPE** vs **ALiBi** vs **relative (T5/DeBERTa)** positional encodings — sweep; affects
-  length generalization on short LB web text. (RoPE used in `modernbert.yml`, not yet swept.)
 - [ ] 🔥 **AttnRes — Attention Residuals** (Moonshot AI / Kimi, 2026) — **drop-in replacement for
   fixed residual connections**: instead of blindly summing every previous layer's output, each
   layer does *content-aware, attention-based mixing* over its layer history. Reported ~25% better

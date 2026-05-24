@@ -13,9 +13,9 @@ back to the defaults below)::
     marker: "↑"
     data:      {train_docs, eval_docs, min_chars}
     tokenizer: {kind, vocab_size}   # kind is required: baseline | caseops
-    pretrain:  {arch, block_size, hidden, layers, heads, intermediate, mlm_prob,
-                optim, lr, weight_decay, batch_size, epochs, max_steps,
-                warmup_ratio, num_proc, seed}
+    pretrain:  {arch, objective, block_size, hidden, layers, heads, intermediate,
+                mlm_prob, diffusion_eps, optim, lr, weight_decay, batch_size,
+                epochs, max_steps, warmup_ratio, num_proc, seed}
     eval:      {max_lines, block_size, micro_batch}
 """
 
@@ -45,13 +45,15 @@ class TokenizerCfg:
 
 @dataclass(frozen=True)
 class PretrainCfg:
-    arch: str = "bert"  # encoder architecture: "bert" or "modernbert"
+    arch: str = "bert"  # encoder architecture: "bert" | "modernbert" | "deberta"
+    objective: str = "mlm"  # training objective: "mlm" | "diffusion"
     block_size: int = 128
     hidden: int = 256
     layers: int = 4
     heads: int = 4
     intermediate: int = 1024
-    mlm_prob: float = 0.15
+    mlm_prob: float = 0.15  # fixed corruption rate for the "mlm" objective
+    diffusion_eps: float = 1e-3  # min diffusion time t (caps the 1/t hazard weight)
     optim: str = "adamw_torch"
     lr: float = 5e-4
     weight_decay: float = 0.01
