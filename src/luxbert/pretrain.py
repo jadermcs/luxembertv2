@@ -196,33 +196,109 @@ class PackedMLMCollator(DataCollatorForLanguageModeling):
         return batch
 
 
-class DiffusionCollator:
-    """Absorbing-state (masked) diffusion noising with a linear schedule.
+class NoiseSchedule:
+    """Absorbing-diffusion noise schedule, shared by the collator and the loss.
 
-    For each example we draw a diffusion time ``t ~ U(eps, 1)``. Under the linear
-    schedule ``alpha_t = 1 - t`` the per-token survival probability is ``alpha_t``,
-    so a token is masked with probability exactly ``t``. Every chosen token is
-    replaced by ``[MASK]`` -- a *pure* absorbing state, with none of MLM's 80/10/10
-    random/keep corruption -- and we keep ``t`` per example so the loss can apply
-    the hazard weight ``1/t``. Special tokens are never masked, and at least one
-    token is masked per example so every row contributes a gradient.
+    A schedule maps a diffusion time ``t`` to two consistent quantities:
+
+    * ``mask_prob(t) = 1 - alpha_t`` -- the per-token probability of being absorbed
+      to ``[MASK]`` (used by ``DiffusionCollator`` to draw the corruption), and
+    * ``hazard(t) = -alpha'_t / (1 - alpha_t)`` -- the continuous-time NELBO weight
+      (used by ``diffusion_loss``).
+
+    Drawing ``t`` and the mask here keeps the two in lockstep, so a schedule change
+    is a single, self-consistent swap. ``sample_t`` draws ``t ~ U(eps, 1)``; the
+    ``eps`` floor caps the otherwise-unbounded hazard as ``t -> 0``.
+    """
+
+    def __init__(self, eps: float):
+        self.eps = eps
+
+    def sample_t(self, n: int) -> torch.Tensor:
+        return torch.empty(n).uniform_(self.eps, 1.0)
+
+    def mask_prob(self, t: torch.Tensor) -> torch.Tensor:  # 1 - alpha_t
+        raise NotImplementedError
+
+    def hazard(self, t: torch.Tensor) -> torch.Tensor:  # -alpha'_t / (1 - alpha_t)
+        raise NotImplementedError
+
+
+class LinearSchedule(NoiseSchedule):
+    """``alpha_t = 1 - t``: mask probability ``t`` and hazard ``1/t`` (capped by eps)."""
+
+    def mask_prob(self, t):
+        return t
+
+    def hazard(self, t):
+        return 1.0 / t
+
+
+class LogLinearSchedule(NoiseSchedule):
+    """Log-survival-linear schedule: ``sigma(t) = sigma_max * t``, ``alpha_t = exp(-sigma)``.
+
+    Here ``log alpha_t`` is linear in ``t`` (hence "log-linear"). The mask
+    probability ``1 - exp(-sigma_max * t)`` rises gently then saturates toward 1 at
+    ``t = 1`` (set ``sigma_max`` so ``exp(-sigma_max) ~ 0``, e.g. 7 -> 0.999), and
+    the hazard ``w(t) = sigma_max * alpha_t / (1 - alpha_t)`` *decays* across ``t``
+    instead of the linear schedule's flat-in-magnitude ``1/t`` -- shifting loss
+    weight away from the heavily-masked, high-``t`` regime.
+    """
+
+    def __init__(self, eps: float, sigma_max: float):
+        super().__init__(eps)
+        self.sigma_max = sigma_max
+
+    def _alpha(self, t):
+        return torch.exp(-self.sigma_max * t)
+
+    def mask_prob(self, t):
+        return 1.0 - self._alpha(t)
+
+    def hazard(self, t):
+        a = self._alpha(t)
+        return self.sigma_max * a / (1.0 - a)
+
+
+def build_schedule(pc) -> NoiseSchedule:
+    """Construct the diffusion noise schedule selected by ``pc.diffusion_schedule``."""
+    if pc.diffusion_schedule == "linear":
+        return LinearSchedule(pc.diffusion_eps)
+    if pc.diffusion_schedule == "loglinear":
+        return LogLinearSchedule(pc.diffusion_eps, pc.diffusion_sigma_max)
+    raise ValueError(
+        f"unknown diffusion_schedule {pc.diffusion_schedule!r}; "
+        "choose 'linear' or 'loglinear'"
+    )
+
+
+class DiffusionCollator:
+    """Absorbing-state (masked) diffusion noising under a ``NoiseSchedule``.
+
+    For each example we draw a diffusion time ``t`` and mask each non-special token
+    independently with probability ``schedule.mask_prob(t) = 1 - alpha_t``. Every
+    chosen token is replaced by ``[MASK]`` -- a *pure* absorbing state, with none of
+    MLM's 80/10/10 random/keep corruption -- and we keep ``t`` per example so the
+    loss can apply ``schedule.hazard(t)``. Special tokens are never masked, and at
+    least one token is masked per example so every row contributes a gradient.
 
     ``position_ids`` (the doc-packing signal for modernbert) are carried through
     unchanged; rows without them (e.g. the bert ``[SEP]`` path) just omit the key.
     """
 
-    def __init__(self, tokenizer, eps: float):
+    def __init__(self, tokenizer, schedule: NoiseSchedule):
         self.mask_id = tokenizer.mask_token_id
         self.special_ids = torch.tensor(sorted(tokenizer.all_special_ids))
-        self.eps = eps
+        self.schedule = schedule
 
     def __call__(self, examples):
         input_ids = torch.tensor([e["input_ids"] for e in examples], dtype=torch.long)
         B, L = input_ids.shape
         special = torch.isin(input_ids, self.special_ids)
 
-        t = torch.empty(B).uniform_(self.eps, 1.0)
-        mask = (torch.rand(B, L) < t.unsqueeze(1)) & ~special
+        t = self.schedule.sample_t(B)
+        probs = self.schedule.mask_prob(t)
+        mask = (torch.rand(B, L) < probs.unsqueeze(1)) & ~special
         # Guarantee >=1 masked token per example: where nothing was selected, mask
         # one uniformly chosen non-special position.
         empty = ~mask.any(dim=1)
@@ -244,21 +320,21 @@ class DiffusionCollator:
         return batch
 
 
-def diffusion_loss(logits, labels, t):
-    """Linear-schedule masked-diffusion NELBO (Monte-Carlo over ``t``).
+def diffusion_loss(logits, labels, t, schedule: NoiseSchedule):
+    """Masked-diffusion NELBO (Monte-Carlo over ``t``) for the given schedule.
 
-    Each example's cross-entropy is *summed* over its masked positions, then scaled
-    by the absorbing-diffusion hazard ``w(t) = -alpha'_t / (1 - alpha_t) = 1/t``
-    (linear ``alpha_t = 1 - t``), and averaged over the batch. This is the MDLM /
-    MD4 objective at the linear limit; standard MLM would instead take an
-    unweighted token mean.
+    Each example's cross-entropy is *summed* over its masked positions, scaled by
+    the absorbing-diffusion hazard ``schedule.hazard(t) = -alpha'_t / (1 - alpha_t)``,
+    and averaged over the batch. This is the MDLM / MD4 objective; standard MLM
+    would instead take an unweighted token mean. The schedule sets the hazard
+    (``1/t`` for linear, ``sigma_max * alpha_t / (1 - alpha_t)`` for loglinear).
     """
     vocab = logits.size(-1)
     ce = F.cross_entropy(
         logits.view(-1, vocab), labels.view(-1), ignore_index=-100, reduction="none"
     ).view(labels.shape)  # [B, L]; zero at ignored (-100) positions
     per_example = ce.sum(dim=1)  # sum over masked tokens
-    weight = 1.0 / t.to(per_example.device)  # hazard rate, linear schedule
+    weight = schedule.hazard(t).to(per_example.device)
     return (weight * per_example).mean()
 
 
@@ -267,14 +343,15 @@ class DiffusionTrainer(Trainer):
 
     The model is the same ``ModernBertForMaskedLM`` denoiser; only the loss differs.
     We pop the per-example time ``t`` and ``labels`` (so the model does not compute
-    its own MLM loss) before delegating to :func:`diffusion_loss`.
+    its own MLM loss) before delegating to :func:`diffusion_loss`. The schedule is
+    read off the collator so it stays identical to the one used to draw the masks.
     """
 
     def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
         t = inputs.pop("t")
         labels = inputs.pop("labels")
         outputs = model(**inputs)
-        loss = diffusion_loss(outputs.logits, labels, t)
+        loss = diffusion_loss(outputs.logits, labels, t, self.data_collator.schedule)
         return (loss, outputs) if return_outputs else loss
 
 
@@ -306,8 +383,10 @@ def main() -> None:
     # "mlm", modernbert packs documents and isolates them via position_ids while
     # bert relies on the [SEP] separator build_dataset inserted (stock collator).
     if pc.objective == "diffusion":
-        collator = DiffusionCollator(tokenizer, pc.diffusion_eps)
+        schedule = build_schedule(pc)
+        collator = DiffusionCollator(tokenizer, schedule)
         trainer_cls = DiffusionTrainer
+        print(f"[{tag}] diffusion schedule: {pc.diffusion_schedule}")
     elif pc.objective == "mlm":
         collator_cls = (
             PackedMLMCollator if pc.arch == "modernbert" else DataCollatorForLanguageModeling

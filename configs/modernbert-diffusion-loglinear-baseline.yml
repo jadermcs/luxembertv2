@@ -1,0 +1,35 @@
+# ModernBERT masked-diffusion with the LOG-LINEAR schedule, baseline text.
+# Same arch/sizing/objective as modernbert-diffusion-baseline.yml -- the only change
+# is pretrain.diffusion_schedule (loglinear vs linear): alpha_t = exp(-sigma_max*t),
+# so the hazard sigma_max*alpha_t/(1-alpha_t) decays across t instead of staying 1/t.
+# Keep every field in sync with modernbert-diffusion-loglinear-caseops.yml -- only
+# `name` and `tokenizer.kind` may differ.
+name: modernbert-diffusion-loglinear-baseline
+marker: "↑"
+
+data:
+  train_docs: 200000
+  eval_docs: 3000
+
+tokenizer:
+  kind: baseline
+  vocab_size: 32000
+
+pretrain:
+  arch: modernbert
+  objective: diffusion
+  diffusion_schedule: loglinear
+  diffusion_eps: 0.001
+  diffusion_sigma_max: 7.0
+  block_size: 128
+  hidden: 512
+  layers: 8
+  heads: 8
+  intermediate: 2048
+  optim: adamw_torch
+  lr: 0.0005
+  batch_size: 128
+  epochs: 5
+
+eval:
+  max_lines: 1000

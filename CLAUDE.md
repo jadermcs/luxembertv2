@@ -76,9 +76,12 @@ State passes between stages as **files on disk** at the namespaced paths above.
    `ARCHITECTURES` / `build_model`. The **training objective** is chosen by
    `pretrain.objective` (`mlm` default, or `diffusion`): `diffusion` is absorbing-state
    masked diffusion — `DiffusionCollator` draws a per-example time `t∼U(eps,1)` and masks
-   each token w.p. `t` (linear schedule `α_t=1-t`, pure `[MASK]`, no 80/10/10), and
+   each non-special token w.p. `1-α_t` (pure `[MASK]`, no 80/10/10), and
    `DiffusionTrainer`/`diffusion_loss` replace MLM's token-mean with the hazard-weighted
-   (`1/t`) NELBO. The model stays a `*ForMaskedLM` denoiser, so eval is unchanged.
+   (`-α'_t/(1-α_t)`) NELBO. A `NoiseSchedule` keeps the masking and the hazard consistent;
+   `pretrain.diffusion_schedule` picks it — `linear` (`α_t=1-t`, hazard `1/t`) or
+   `loglinear` (`α_t=exp(-σ_max·t)`, hazard `σ_max·α_t/(1-α_t)`, decaying in `t`). The
+   model stays a `*ForMaskedLM` denoiser, so eval is unchanged.
    Architecture, objective, and hyperparameters are identical across the two kinds of a
    pair — only the tokenizer and text differ. PoC-sized defaults; the SLURM script
    overrides with larger model/data.

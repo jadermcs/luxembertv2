@@ -14,8 +14,9 @@ back to the defaults below)::
     data:      {train_docs, eval_docs, min_chars}
     tokenizer: {kind, vocab_size}   # kind is required: baseline | caseops
     pretrain:  {arch, objective, block_size, hidden, layers, heads, intermediate,
-                mlm_prob, diffusion_eps, optim, lr, weight_decay, batch_size,
-                epochs, max_steps, warmup_ratio, num_proc, seed}
+                mlm_prob, diffusion_eps, diffusion_schedule, diffusion_sigma_max,
+                optim, lr, weight_decay, batch_size, epochs, max_steps,
+                warmup_ratio, num_proc, seed}
     eval:      {max_lines, block_size, micro_batch}
 """
 
@@ -53,7 +54,9 @@ class PretrainCfg:
     heads: int = 4
     intermediate: int = 1024
     mlm_prob: float = 0.15  # fixed corruption rate for the "mlm" objective
-    diffusion_eps: float = 1e-3  # min diffusion time t (caps the 1/t hazard weight)
+    diffusion_eps: float = 1e-3  # min diffusion time t (time floor; caps the hazard)
+    diffusion_schedule: str = "linear"  # "linear" (1/t) | "loglinear" (exp(-sigma_max*t))
+    diffusion_sigma_max: float = 7.0  # loglinear total noise at t=1 (mask prob 1-e^-x)
     optim: str = "adamw_torch"
     lr: float = 5e-4
     weight_decay: float = 0.01
