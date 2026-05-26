@@ -1,0 +1,36 @@
+# ModernBERT ELECTRA experiment, baseline text. Generator and discriminator are both
+# ModernBERT; their token embeddings are shared via DeBERTa-V3 GDES (the discriminator
+# sees sg(E_G)+Delta, and Delta is folded back into E_G after each step). After ELECTRA
+# pretraining the discriminator is MLM-finetuned so BPB stays comparable to the other
+# objectives. Identical sizing to modernbert-baseline.yml -- keep every field in sync
+# with electra-caseops.yml; only `name` and `tokenizer.kind` may differ.
+name: electra-baseline
+marker: "↑"
+
+data:
+  train_docs: 200000
+  eval_docs: 3000
+
+tokenizer:
+  kind: baseline
+  vocab_size: 32000
+
+pretrain:
+  arch: modernbert
+  objective: electra
+  block_size: 128
+  hidden: 512
+  layers: 8
+  heads: 8
+  intermediate: 2048
+  optim: adamw_torch
+  lr: 0.0005
+  batch_size: 128
+  epochs: 5
+  electra_generator_layer_ratio: 0.333333
+  electra_loss_weight: 50.0
+  electra_sample_temperature: 1.0
+  electra_finetune_epochs: 1.0
+
+eval:
+  max_lines: 1000

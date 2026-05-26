@@ -1,0 +1,33 @@
+# ModernBERT ELECTRA experiment, CaseOps text. See electra-baseline.yml for the GDES
+# sharing + MLM-finetune scheme. Keep every field in sync with electra-baseline.yml --
+# only `name` and `tokenizer.kind` may differ.
+name: electra-caseops
+marker: "↑"
+
+data:
+  train_docs: 200000
+  eval_docs: 3000
+
+tokenizer:
+  kind: caseops
+  vocab_size: 32000
+
+pretrain:
+  arch: modernbert
+  objective: electra
+  block_size: 128
+  hidden: 512
+  layers: 8
+  heads: 8
+  intermediate: 2048
+  optim: adamw_torch
+  lr: 0.0005
+  batch_size: 128
+  epochs: 5
+  electra_generator_layer_ratio: 0.333333
+  electra_loss_weight: 50.0
+  electra_sample_temperature: 1.0
+  electra_finetune_epochs: 1.0
+
+eval:
+  max_lines: 1000

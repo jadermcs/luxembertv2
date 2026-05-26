@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
 from datasets import load_dataset
 from transformers import (
@@ -20,7 +21,9 @@ from transformers import (
     DebertaV2ForMaskedLM,
     ModernBertConfig,
     ModernBertForMaskedLM,
+    ModernBertModel,
     Trainer,
+    TrainerCallback,
     TrainingArguments,
 )
 from transformers.masking_utils import (
@@ -34,35 +37,49 @@ from luxbert import config, experiment
 from luxbert.hf_utils import load_tokenizer, text_file
 
 
+def _modernbert_packed_attention_mask(model_config, input_ids, position_ids, dtype):
+    """Build per-layer attention masks that forbid cross-document attention.
+
+    When ``position_ids`` restart per document, unrelated docs share a block but
+    must not attend to each other. We turn the packed-segment indices into both
+    a full and a sliding-window mask (the two layer types ModernBERT uses).
+    Returns ``None`` when the batch isn't actually packed (no doc boundaries),
+    so the caller can fall back to the stock attention path.
+    """
+    packed = find_packed_sequence_indices(position_ids)
+    if packed is None:
+        return None
+    and_fn = packed_sequence_mask_function(packed)
+    # create_*_mask only reads shape/dtype/device off this tensor.
+    embeds = torch.empty(
+        input_ids.shape[0], input_ids.shape[1], 1,
+        dtype=dtype, device=input_ids.device,
+    )
+    return {
+        "full_attention": create_bidirectional_mask(
+            model_config, embeds, None, and_mask_function=and_fn
+        ),
+        "sliding_attention": create_bidirectional_sliding_window_mask(
+            model_config, embeds, None, and_mask_function=and_fn
+        ),
+    }
+
+
 class PackedModernBertForMaskedLM(ModernBertForMaskedLM):
     """ModernBERT MLM that confines attention to within each packed document.
 
-    When ``position_ids`` restart per document (see ``build_dataset``), unrelated
-    docs share a block but must not attend to each other. We detect the packed
-    segments and build per-layer-type masks (full + sliding-window) that forbid
-    cross-document attention, so packing removes pad waste *without* the
-    cross-doc contamination plain concatenation would introduce. Falls back to
-    the stock behavior when the batch isn't packed.
+    Packing removes pad waste *without* the cross-doc contamination plain
+    concatenation would introduce. Falls back to the stock behavior when the
+    batch isn't packed.
     """
 
     def forward(self, input_ids=None, attention_mask=None, position_ids=None, **kwargs):
         if position_ids is not None and not isinstance(attention_mask, dict):
-            packed = find_packed_sequence_indices(position_ids)
-            if packed is not None:
-                and_fn = packed_sequence_mask_function(packed)
-                # create_*_mask only reads shape/dtype/device off this tensor.
-                embeds = torch.empty(
-                    input_ids.shape[0], input_ids.shape[1], 1,
-                    dtype=self.dtype, device=input_ids.device,
-                )
-                attention_mask = {
-                    "full_attention": create_bidirectional_mask(
-                        self.config, embeds, None, and_mask_function=and_fn
-                    ),
-                    "sliding_attention": create_bidirectional_sliding_window_mask(
-                        self.config, embeds, None, and_mask_function=and_fn
-                    ),
-                }
+            mask = _modernbert_packed_attention_mask(
+                self.config, input_ids, position_ids, self.dtype
+            )
+            if mask is not None:
+                attention_mask = mask
         return super().forward(
             input_ids=input_ids,
             attention_mask=attention_mask,
@@ -355,6 +372,212 @@ class DiffusionTrainer(Trainer):
         return (loss, outputs) if return_outputs else loss
 
 
+class GDESEmbedding(nn.Module):
+    """Discriminator-side embedding that holds ``sg(E_G) + Delta`` (DeBERTa-V3 GDES).
+
+    ``E_G`` is the generator's ``nn.Embedding`` -- we hold a reference to it but
+    deliberately do NOT register it as a submodule, so the discriminator's
+    optimizer state and ``state_dict`` contain only the local delta. On forward
+    we materialize ``E_G.detach() + delta`` so the discriminator's loss flows
+    into ``delta`` only, never back into ``E_G``. After every optimizer step
+    :meth:`fold` does ``E_G <- E_G + delta; delta <- 0``, folding the
+    discriminator's update into the shared embedding -- the GDES trick that
+    lets both losses contribute without fighting on the same gradient.
+    """
+
+    def __init__(self, gen_embedding: nn.Embedding):
+        super().__init__()
+        object.__setattr__(self, "gen_embedding", gen_embedding)
+        self.delta = nn.Parameter(torch.zeros_like(gen_embedding.weight))
+        self.padding_idx = gen_embedding.padding_idx
+        self.num_embeddings = gen_embedding.num_embeddings
+        self.embedding_dim = gen_embedding.embedding_dim
+
+    def forward(self, input_ids):
+        weight = self.gen_embedding.weight.detach() + self.delta
+        return F.embedding(input_ids, weight, self.padding_idx)
+
+    @torch.no_grad()
+    def fold(self):
+        self.gen_embedding.weight.add_(self.delta)
+        self.delta.zero_()
+
+
+class PackedModernBertDiscriminator(nn.Module):
+    """ModernBERT backbone + per-token replaced-vs-original binary head.
+
+    Same packing-aware attention as :class:`PackedModernBertForMaskedLM` so the
+    discriminator sees the same doc-isolation as the generator and the MLM
+    finetune that comes after.
+    """
+
+    def __init__(self, mb_config: ModernBertConfig):
+        super().__init__()
+        self.backbone = ModernBertModel(mb_config)
+        self.head = nn.Linear(mb_config.hidden_size, 1)
+        self.mb_config = mb_config
+
+    def forward(self, input_ids, position_ids=None, attention_mask=None):
+        if position_ids is not None and not isinstance(attention_mask, dict):
+            mask = _modernbert_packed_attention_mask(
+                self.mb_config, input_ids, position_ids, self.head.weight.dtype
+            )
+            if mask is not None:
+                attention_mask = mask
+        out = self.backbone(
+            input_ids=input_ids,
+            position_ids=position_ids,
+            attention_mask=attention_mask,
+        )
+        return self.head(out.last_hidden_state).squeeze(-1)  # [B, L]
+
+
+class ElectraGDES(nn.Module):
+    """ELECTRA-style generator + discriminator with GDES embedding sharing.
+
+    The generator is a small ``PackedModernBertForMaskedLM`` (fewer layers, same
+    hidden/heads/intermediate as the discriminator so the token-embedding dim
+    matches). The discriminator is a ``PackedModernBertDiscriminator`` whose
+    ``tok_embeddings`` is replaced by a :class:`GDESEmbedding` referencing the
+    generator's token embedding. Forward:
+
+    1. generator MLM on the masked batch -> generator loss + token logits.
+    2. sample replacement ids at masked positions (multinomial, no_grad) and
+       splice them into the discriminator's input.
+    3. discriminator predicts ``replaced`` vs ``original`` per token; BCE loss
+       over all positions (specials at non-masked positions are trivially
+       "original" so they carry no signal but no harm either).
+    4. total loss = ``gen_loss + lambda * disc_loss``.
+
+    A :class:`GDESFoldCallback` folds ``delta`` back into ``E_G`` after each
+    optimizer step, completing the GDES update rule.
+    """
+
+    def __init__(
+        self,
+        gen_config: ModernBertConfig,
+        disc_config: ModernBertConfig,
+        loss_weight: float,
+        sample_temperature: float,
+    ):
+        super().__init__()
+        self.generator = PackedModernBertForMaskedLM(gen_config)
+        self.discriminator = PackedModernBertDiscriminator(disc_config)
+        gen_tok = self.generator.model.embeddings.tok_embeddings
+        self.gdes_embed = GDESEmbedding(gen_tok)
+        self.discriminator.backbone.embeddings.tok_embeddings = self.gdes_embed
+        self.loss_weight = loss_weight
+        self.sample_temperature = sample_temperature
+
+    def fold(self):
+        self.gdes_embed.fold()
+
+    def forward(self, input_ids, labels, position_ids=None, **_):
+        gen_out = self.generator(
+            input_ids=input_ids, labels=labels, position_ids=position_ids
+        )
+        gen_loss = gen_out.loss
+
+        mask_pos = labels != -100
+        with torch.no_grad():
+            logits = gen_out.logits
+            if self.sample_temperature != 1.0:
+                logits = logits / self.sample_temperature
+            B, L, V = logits.shape
+            probs = F.softmax(logits, dim=-1).view(-1, V)
+            sampled = torch.multinomial(probs, num_samples=1).view(B, L)
+            disc_input = input_ids.clone()
+            disc_input[mask_pos] = sampled[mask_pos]
+            true_tokens = torch.where(mask_pos, labels, disc_input)
+            disc_labels = (disc_input != true_tokens).float()
+
+        disc_logits = self.discriminator(
+            input_ids=disc_input, position_ids=position_ids
+        )
+        disc_loss = F.binary_cross_entropy_with_logits(disc_logits, disc_labels)
+        loss = gen_loss + self.loss_weight * disc_loss
+        return {"loss": loss, "gen_loss": gen_loss.detach(), "disc_loss": disc_loss.detach()}
+
+
+class ElectraTrainer(Trainer):
+    """Trainer that just unpacks the ELECTRA module's dict loss."""
+
+    def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
+        outputs = model(**inputs)
+        loss = outputs["loss"]
+        return (loss, outputs) if return_outputs else loss
+
+
+class GDESFoldCallback(TrainerCallback):
+    """Fold the GDES delta into ``E_G`` after every optimizer step."""
+
+    def __init__(self, electra_model: ElectraGDES):
+        self._model = electra_model
+
+    def on_step_end(self, args, state, control, **kwargs):
+        self._model.fold()
+
+
+def build_electra(pc, tokenizer):
+    """Build the ELECTRA pair (generator+discriminator) for an ELECTRA experiment.
+
+    Generator and discriminator share hidden/heads/intermediate (so embeddings
+    can be shared at the same dim); the generator just has fewer layers,
+    derived from ``pc.electra_generator_layer_ratio``.
+    """
+    if pc.arch != "modernbert":
+        raise ValueError(
+            f"electra objective currently requires arch=modernbert, got {pc.arch!r}"
+        )
+    gen_layers = max(1, round(pc.layers * pc.electra_generator_layer_ratio))
+    common = dict(
+        vocab_size=tokenizer.vocab_size,
+        hidden_size=pc.hidden,
+        num_attention_heads=pc.heads,
+        intermediate_size=pc.intermediate,
+        max_position_embeddings=pc.block_size + 2,
+        pad_token_id=tokenizer.pad_token_id,
+        bos_token_id=tokenizer.bos_token_id,
+        eos_token_id=tokenizer.eos_token_id,
+        cls_token_id=tokenizer.cls_token_id,
+        sep_token_id=tokenizer.sep_token_id,
+    )
+    gen_cfg = ModernBertConfig(num_hidden_layers=gen_layers, **common)
+    disc_cfg = ModernBertConfig(num_hidden_layers=pc.layers, **common)
+    model = ElectraGDES(
+        gen_cfg,
+        disc_cfg,
+        loss_weight=pc.electra_loss_weight,
+        sample_temperature=pc.electra_sample_temperature,
+    )
+    return model, disc_cfg, gen_layers
+
+
+def discriminator_to_mlm(electra_model: ElectraGDES, disc_cfg: ModernBertConfig):
+    """Promote the trained discriminator backbone to a ``ForMaskedLM`` for finetune.
+
+    The shared embedding state lives in the generator after one final fold (the
+    callback already folds after every step; we fold once more to be safe). We
+    copy the generator's token embedding into a fresh ``nn.Embedding`` on the
+    discriminator backbone (it was a :class:`GDESEmbedding` during pretraining),
+    then transplant the backbone into a packed MLM model whose decoder head ties
+    back to it.
+    """
+    electra_model.fold()
+    disc_backbone = electra_model.discriminator.backbone
+    gen_weight = electra_model.generator.model.embeddings.tok_embeddings.weight.data
+    new_embed = nn.Embedding(
+        disc_cfg.vocab_size, disc_cfg.hidden_size, padding_idx=disc_cfg.pad_token_id
+    )
+    new_embed.weight.data.copy_(gen_weight)
+    disc_backbone.embeddings.tok_embeddings = new_embed
+
+    ft_model = PackedModernBertForMaskedLM(disc_cfg)
+    ft_model.model.load_state_dict(disc_backbone.state_dict())
+    ft_model.tie_weights()
+    return ft_model
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--config", required=True, help="path to a configs/*.yml file")
@@ -374,14 +597,80 @@ def main() -> None:
     tag = f"{cfg.name}/{cfg.tokenizer.kind}"
     print(f"[{tag}] {len(ds)} blocks of {pc.block_size} tokens")
 
-    model = build_model(pc, tokenizer)
-    print(f"[{tag}] arch: {pc.arch}  params: {model.num_parameters()/1e6:.1f}M")
+    out_dir = config.run_dir(cfg.name)
+
+    def make_training_args(epochs, max_steps, **overrides):
+        return TrainingArguments(
+            output_dir=str(out_dir),
+            per_device_train_batch_size=pc.batch_size,
+            learning_rate=pc.lr,
+            num_train_epochs=epochs,
+            max_steps=max_steps,
+            optim=pc.optim,
+            warmup_ratio=pc.warmup_ratio,
+            weight_decay=pc.weight_decay,
+            logging_steps=50,
+            save_strategy="no",
+            report_to="wandb",
+            seed=pc.seed,
+            bf16=False,
+            dataloader_num_workers=4,
+            **overrides,
+        )
 
     # The objective picks both the noising (collator) and the loss (trainer). For
     # "diffusion" the time-dependent collator carries position_ids itself, so it
     # works under both the packed (modernbert) and [SEP] (bert) data layouts. For
     # "mlm", modernbert packs documents and isolates them via position_ids while
     # bert relies on the [SEP] separator build_dataset inserted (stock collator).
+    # "electra" trains a gen+disc pair with GDES shared embeddings, then promotes
+    # the discriminator to a ForMaskedLM and continues under MLM so BPB is
+    # comparable to the other objectives.
+    if pc.objective == "electra":
+        electra_model, disc_cfg, gen_layers = build_electra(pc, tokenizer)
+        print(
+            f"[{tag}] arch: {pc.arch} (electra)  gen_layers: {gen_layers}  "
+            f"disc_layers: {pc.layers}  lambda: {pc.electra_loss_weight}"
+        )
+        # ELECTRA needs MLM-style masking for the generator input; the discriminator
+        # consumes the gen's sample so masking is upstream of both.
+        electra_collator = PackedMLMCollator(
+            tokenizer=tokenizer, mlm=True, mlm_probability=pc.mlm_prob
+        )
+        targs = make_training_args(pc.epochs, pc.max_steps)
+        trainer = ElectraTrainer(
+            model=electra_model,
+            args=targs,
+            train_dataset=ds,
+            data_collator=electra_collator,
+            callbacks=[GDESFoldCallback(electra_model)],
+        )
+        print(f"[{tag}] objective: electra (pretraining gen+disc)")
+        trainer.train()
+
+        # Continuation: MLM-finetune the discriminator backbone so the result is
+        # a ForMaskedLM that eval_bpb can score on equal footing.
+        ft_model = discriminator_to_mlm(electra_model, disc_cfg)
+        print(
+            f"[{tag}] objective: electra (MLM finetune of discriminator, "
+            f"epochs={pc.electra_finetune_epochs} steps={pc.electra_finetune_steps})"
+        )
+        ft_collator = PackedMLMCollator(
+            tokenizer=tokenizer, mlm=True, mlm_probability=pc.mlm_prob
+        )
+        ft_args = make_training_args(pc.electra_finetune_epochs, pc.electra_finetune_steps)
+        ft_trainer = Trainer(
+            model=ft_model, args=ft_args, train_dataset=ds, data_collator=ft_collator
+        )
+        ft_trainer.train()
+        ft_trainer.save_model(str(out_dir))
+        tokenizer.save_pretrained(str(out_dir))
+        print(f"[{tag}] saved model -> {out_dir}")
+        return
+
+    model = build_model(pc, tokenizer)
+    print(f"[{tag}] arch: {pc.arch}  params: {model.num_parameters()/1e6:.1f}M")
+
     if pc.objective == "diffusion":
         schedule = build_schedule(pc)
         collator = DiffusionCollator(tokenizer, schedule)
@@ -395,27 +684,11 @@ def main() -> None:
         trainer_cls = Trainer
     else:
         raise ValueError(
-            f"unknown objective {pc.objective!r}; choose 'mlm' or 'diffusion'"
+            f"unknown objective {pc.objective!r}; choose 'mlm', 'diffusion', or 'electra'"
         )
     print(f"[{tag}] objective: {pc.objective}")
 
-    out_dir = config.run_dir(cfg.name)
-    targs = TrainingArguments(
-        output_dir=str(out_dir),
-        per_device_train_batch_size=pc.batch_size,
-        learning_rate=pc.lr,
-        num_train_epochs=pc.epochs,
-        max_steps=pc.max_steps,
-        optim=pc.optim,
-        warmup_ratio=pc.warmup_ratio,
-        weight_decay=pc.weight_decay,
-        logging_steps=50,
-        save_strategy="no",
-        report_to="wandb",
-        seed=pc.seed,
-        bf16=False,
-        dataloader_num_workers=4,
-    )
+    targs = make_training_args(pc.epochs, pc.max_steps)
     trainer = trainer_cls(
         model=model, args=targs, train_dataset=ds, data_collator=collator
     )

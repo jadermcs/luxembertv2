@@ -15,6 +15,9 @@ back to the defaults below)::
     tokenizer: {kind, vocab_size}   # kind is required: baseline | caseops
     pretrain:  {arch, objective, block_size, hidden, layers, heads, intermediate,
                 mlm_prob, diffusion_eps, diffusion_schedule, diffusion_sigma_max,
+                electra_generator_layer_ratio, electra_loss_weight,
+                electra_sample_temperature, electra_finetune_epochs,
+                electra_finetune_steps,
                 optim, lr, weight_decay, batch_size, epochs, max_steps,
                 warmup_ratio, num_proc, seed}
     eval:      {max_lines, block_size, micro_batch}
@@ -47,7 +50,7 @@ class TokenizerCfg:
 @dataclass(frozen=True)
 class PretrainCfg:
     arch: str = "bert"  # encoder architecture: "bert" | "modernbert" | "deberta"
-    objective: str = "mlm"  # training objective: "mlm" | "diffusion"
+    objective: str = "mlm"  # training objective: "mlm" | "diffusion" | "electra"
     block_size: int = 128
     hidden: int = 256
     layers: int = 4
@@ -57,6 +60,19 @@ class PretrainCfg:
     diffusion_eps: float = 1e-3  # min diffusion time t (time floor; caps the hazard)
     diffusion_schedule: str = "linear"  # "linear" (1/t) | "loglinear" (exp(-sigma_max*t))
     diffusion_sigma_max: float = 7.0  # loglinear total noise at t=1 (mask prob 1-e^-x)
+    # ELECTRA-only knobs. The generator shares hidden/heads/intermediate with the
+    # discriminator (so embeddings can be shared at the same dim) but uses fewer
+    # layers, set by max(1, round(layers * electra_generator_layer_ratio)).
+    # electra_loss_weight is the lambda multiplier on the discriminator BCE loss
+    # (ELECTRA paper uses 50). After ELECTRA pretraining, the discriminator
+    # backbone is fitted with an MLM head and trained under MLM for
+    # electra_finetune_epochs (or electra_finetune_steps if >= 0) so its output
+    # can be scored with BPB on equal footing with the other objectives.
+    electra_generator_layer_ratio: float = 1 / 3
+    electra_loss_weight: float = 50.0
+    electra_sample_temperature: float = 1.0
+    electra_finetune_epochs: float = 1.0
+    electra_finetune_steps: int = -1
     optim: str = "adamw_torch"
     lr: float = 5e-4
     weight_decay: float = 0.01
