@@ -23,7 +23,7 @@ from datetime import datetime, timezone
 
 import torch
 import torch.nn.functional as F
-from transformers import AutoModelForMaskedLM
+from transformers import AutoModelForMaskedLM, AutoTokenizer
 
 from luxbert import config, experiment
 from luxbert.caseops import CaseOps
@@ -91,17 +91,31 @@ def main() -> None:
     ap.add_argument("--config", required=True, help="path to a configs/*.yml file")
     ap.add_argument("--model-dir", default=None, help="defaults to runs/<exp>")
     ap.add_argument("--eval-file", default=None, help="defaults to data/<data_key>/raw/eval.txt")
+    ap.add_argument(
+        "--hf-model",
+        default=None,
+        help="HF repo id (e.g. lothritz/LuxemBERT). Loads model+tokenizer from the Hub "
+        "and forces baseline scoring; uses the config only for the eval file and eval params.",
+    )
     args = ap.parse_args()
 
     cfg = experiment.load(args.config)
     ec = cfg.eval
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    model_dir = args.model_dir or str(config.run_dir(cfg.name))
     eval_file = args.eval_file or str(config.raw_dir(cfg.data_key) / "eval.txt")
 
-    tokenizer = load_tokenizer(cfg.name)
-    model = AutoModelForMaskedLM.from_pretrained(model_dir).to(device).eval()
+    if args.hf_model:
+        if cfg.tokenizer.kind != "baseline":
+            raise SystemExit("--hf-model requires a baseline config (raw text scoring).")
+        tokenizer = AutoTokenizer.from_pretrained(args.hf_model)
+        model = AutoModelForMaskedLM.from_pretrained(args.hf_model).to(device).eval()
+        exp_name = args.hf_model
+    else:
+        model_dir = args.model_dir or str(config.run_dir(cfg.name))
+        tokenizer = load_tokenizer(cfg.name)
+        model = AutoModelForMaskedLM.from_pretrained(model_dir).to(device).eval()
+        exp_name = cfg.name
     mask_id = tokenizer.mask_token_id
     co = CaseOps(marker=cfg.marker)
 
@@ -131,7 +145,7 @@ def main() -> None:
     nats_per_token = total_nats / max(total_tokens, 1)
     bpb = total_nats / math.log(2) / total_bytes
 
-    print(f"experiment       : {cfg.name}")
+    print(f"experiment       : {exp_name}")
     print(f"tokenizer        : {cfg.tokenizer.kind}")
     print(f"lines scored     : {n}")
     print(f"original bytes    : {total_bytes}")
@@ -143,7 +157,7 @@ def main() -> None:
     append_result(
         {
             "timestamp": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-            "experiment": cfg.name,
+            "experiment": exp_name,
             "tokenizer": cfg.tokenizer.kind,
             "arch": cfg.pretrain.arch,
             "vocab_size": cfg.tokenizer.vocab_size,
