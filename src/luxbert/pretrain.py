@@ -697,6 +697,11 @@ def main() -> None:
             # We only want the eval loss curve, not predictions/metrics; this also
             # keeps the custom (diffusion/barlow/electra) trainers' eval path simple.
             prediction_loss_only=True,
+            # Force the label key explicitly: our packed modernbert model takes
+            # ``labels`` via **kwargs, so HF's find_labels can't see it and would
+            # leave label_names empty -- then prediction_step decides has_labels is
+            # False and never computes (logs) eval_loss, only the timing metrics.
+            label_names=["labels"],
             save_strategy="no",
             report_to="wandb",
             seed=pc.seed,
