@@ -1,0 +1,35 @@
+# ModernBERT with decorrelated WORD embeddings, baseline text. Like
+# modernbert-barlow-baseline.yml, but the Barlow-Twins redundancy-reduction loss is
+# applied to the embedding-layer output (hidden_states[0], before any transformer
+# block) instead of the final hidden state -- so the word-embedding dimensions are
+# decorrelated. Keep every field in sync with modernbert-barlow-embed-caseops.yml --
+# only `name` and `tokenizer.kind` may differ.
+name: modernbert-barlow-embed-baseline
+marker: "↑"
+
+data:
+  train_docs: 200000
+  eval_docs: 3000
+
+tokenizer:
+  kind: baseline
+  vocab_size: 32000
+
+pretrain:
+  arch: modernbert
+  objective: barlow
+  block_size: 128
+  hidden: 512
+  layers: 8
+  heads: 8
+  intermediate: 2048
+  optim: adamw_torch
+  lr: 0.0005
+  batch_size: 128
+  epochs: 5
+  barlow_weight: 1.0
+  barlow_lambda: 0.005
+  barlow_layer: 0
+
+eval:
+  max_lines: 1000

@@ -1,0 +1,33 @@
+# ModernBERT with decorrelated embeddings, CaseOps text. On top of MLM we add a
+# Barlow-Twins redundancy-reduction loss on the encoder's hidden states so the
+# embedding dimensions are decorrelated (objective: barlow). Keep every field in
+# sync with modernbert-barlow-baseline.yml -- only `name` and `tokenizer.kind`
+# may differ.
+name: modernbert-barlow-caseops
+marker: "↑"
+
+data:
+  train_docs: 200000
+  eval_docs: 3000
+
+tokenizer:
+  kind: caseops
+  vocab_size: 32000
+
+pretrain:
+  arch: modernbert
+  objective: barlow
+  block_size: 128
+  hidden: 512
+  layers: 8
+  heads: 8
+  intermediate: 2048
+  optim: adamw_torch
+  lr: 0.0005
+  batch_size: 128
+  epochs: 5
+  barlow_weight: 1.0
+  barlow_lambda: 0.005
+
+eval:
+  max_lines: 1000
