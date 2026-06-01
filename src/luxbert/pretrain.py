@@ -8,6 +8,7 @@ effect. Use a small config for a CPU PoC, a larger one on GPU.
 from __future__ import annotations
 
 import argparse
+import os
 
 import torch
 import torch.nn as nn
@@ -650,6 +651,10 @@ def main() -> None:
     cfg = experiment.load(args.config)
     pc = cfg.pretrain
 
+    # Group all runs of this project under one wandb project; name each run after the
+    # config (one config = one run name) so runs are easy to tell apart.
+    os.environ["WANDB_PROJECT"] = "luxembert"
+
     tokenizer = load_tokenizer(cfg.name)
     ds = build_dataset(
         tokenizer,
@@ -658,14 +663,27 @@ def main() -> None:
         pc.num_proc,
         pc.arch,
     )
+    # Held-out split for in-training validation (same text eval_bpb scores later).
+    eval_ds = None
+    if pc.eval_steps > 0:
+        eval_ds = build_dataset(
+            tokenizer,
+            text_file(cfg.data_key, cfg.tokenizer.kind, "eval"),
+            pc.block_size,
+            pc.num_proc,
+            pc.arch,
+        )
     tag = f"{cfg.name}/{cfg.tokenizer.kind}"
-    print(f"[{tag}] {len(ds)} blocks of {pc.block_size} tokens")
+    eval_note = f"  {len(eval_ds)} eval blocks" if eval_ds is not None else ""
+    print(f"[{tag}] {len(ds)} blocks of {pc.block_size} tokens{eval_note}")
 
     out_dir = config.run_dir(cfg.name)
 
-    def make_training_args(epochs, max_steps, **overrides):
+    def make_training_args(epochs, max_steps, run_name, **overrides):
+        do_eval = eval_ds is not None
         return TrainingArguments(
             output_dir=str(out_dir),
+            run_name=run_name,
             per_device_train_batch_size=pc.batch_size,
             learning_rate=pc.lr,
             num_train_epochs=epochs,
@@ -674,6 +692,11 @@ def main() -> None:
             warmup_ratio=pc.warmup_ratio,
             weight_decay=pc.weight_decay,
             logging_steps=50,
+            eval_strategy="steps" if do_eval else "no",
+            eval_steps=pc.eval_steps if do_eval else None,
+            # We only want the eval loss curve, not predictions/metrics; this also
+            # keeps the custom (diffusion/barlow/electra) trainers' eval path simple.
+            prediction_loss_only=True,
             save_strategy="no",
             report_to="wandb",
             seed=pc.seed,
@@ -701,11 +724,12 @@ def main() -> None:
         electra_collator = PackedMLMCollator(
             tokenizer=tokenizer, mlm=True, mlm_probability=pc.mlm_prob
         )
-        targs = make_training_args(pc.epochs, pc.max_steps)
+        targs = make_training_args(pc.epochs, pc.max_steps, run_name=cfg.name)
         trainer = ElectraTrainer(
             model=electra_model,
             args=targs,
             train_dataset=ds,
+            eval_dataset=eval_ds,
             data_collator=electra_collator,
             callbacks=[GDESFoldCallback(electra_model)],
         )
@@ -722,9 +746,17 @@ def main() -> None:
         ft_collator = PackedMLMCollator(
             tokenizer=tokenizer, mlm=True, mlm_probability=pc.mlm_prob
         )
-        ft_args = make_training_args(pc.electra_finetune_epochs, pc.electra_finetune_steps)
+        ft_args = make_training_args(
+            pc.electra_finetune_epochs,
+            pc.electra_finetune_steps,
+            run_name=f"{cfg.name}-mlm-finetune",
+        )
         ft_trainer = Trainer(
-            model=ft_model, args=ft_args, train_dataset=ds, data_collator=ft_collator
+            model=ft_model,
+            args=ft_args,
+            train_dataset=ds,
+            eval_dataset=eval_ds,
+            data_collator=ft_collator,
         )
         ft_trainer.train()
         ft_trainer.save_model(str(out_dir))
@@ -770,10 +802,10 @@ def main() -> None:
         )
     print(f"[{tag}] objective: {pc.objective}")
 
-    targs = make_training_args(pc.epochs, pc.max_steps)
+    targs = make_training_args(pc.epochs, pc.max_steps, run_name=cfg.name)
     trainer = trainer_cls(
-        model=model, args=targs, train_dataset=ds, data_collator=collator,
-        **trainer_kwargs,
+        model=model, args=targs, train_dataset=ds, eval_dataset=eval_ds,
+        data_collator=collator, **trainer_kwargs,
     )
     trainer.train()
     trainer.save_model(str(out_dir))

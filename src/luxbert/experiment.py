@@ -93,6 +93,11 @@ class PretrainCfg:
     warmup_ratio: float = 0.05
     num_proc: int = 4
     seed: int = 42
+    # Held-out validation during training. Every ``eval_steps`` optimizer steps the
+    # trainer scores the eval split (the same held-out text eval_bpb later uses) and
+    # logs ``eval/loss`` to wandb. ``0`` disables in-training evaluation. Identical
+    # across a pair (both variants score their own eval split the same way).
+    eval_steps: int = 200
 
 
 @dataclass(frozen=True)
