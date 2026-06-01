@@ -372,6 +372,70 @@ class DiffusionTrainer(Trainer):
         return (loss, outputs) if return_outputs else loss
 
 
+def _off_diagonal(m: torch.Tensor) -> torch.Tensor:
+    """Return a flat view of a square matrix's off-diagonal elements."""
+    n, _ = m.shape
+    return m.flatten()[:-1].view(n - 1, n + 1)[:, 1:].flatten()
+
+
+def barlow_twins_loss(z: torch.Tensor, lambd: float, eps: float = 1e-5) -> torch.Tensor:
+    """Barlow-Twins redundancy-reduction loss over a batch of representations.
+
+    ``z`` is ``[N, D]`` (``N`` token representations of width ``D``). We standardize
+    each dimension across the batch (mean 0, unit variance), form the ``D x D``
+    cross-correlation matrix ``C = z_norm.T @ z_norm / N``, and push it toward the
+    identity: ``sum_i (1 - C_ii)^2 + lambd * sum_{i!=j} C_ij^2``. The diagonal term
+    keeps each dimension informative (unit variance) while the off-diagonal term
+    *decorrelates* the dimensions, removing redundancy between them (Zbontar et al.
+    2021). With a single MLM view there is no invariance pair, so the off-diagonal
+    decorrelation is the operative part; ``lambd`` weights it.
+
+    Population (biased) std is used so a perfectly standardized batch has ``C_ii = 1``
+    exactly, making the on-diagonal term vanish at the target.
+    """
+    z = (z - z.mean(0)) / (z.std(0, unbiased=False) + eps)
+    c = (z.T @ z) / z.shape[0]
+    on_diag = (torch.diagonal(c) - 1).pow(2).sum()
+    off_diag = _off_diagonal(c).pow(2).sum()
+    return on_diag + lambd * off_diag
+
+
+class BarlowTrainer(Trainer):
+    """MLM trainer with an auxiliary Barlow-Twins decorrelation loss on the hidden states.
+
+    The model is an ordinary ``*ForMaskedLM`` (eval is unchanged); we just ask it for
+    its hidden states, take the non-special token representations across the batch at
+    layer ``barlow_layer``, and add ``barlow_weight * barlow_twins_loss(...)`` to the
+    model's own MLM loss. Masked positions hold ``[MASK]`` (a special id) and are
+    excluded, so the BT term decorrelates the representations of the *real* tokens.
+
+    ``barlow_layer`` selects which hidden state to decorrelate: ``-1`` is the final
+    layer (contextual reps), ``0`` is the embedding-layer output (the word embeddings,
+    before any transformer block).
+    """
+
+    def __init__(
+        self, *args, barlow_weight, barlow_lambda, barlow_layer, special_ids, **kwargs
+    ):
+        super().__init__(*args, **kwargs)
+        self.barlow_weight = barlow_weight
+        self.barlow_lambda = barlow_lambda
+        self.barlow_layer = barlow_layer
+        self.register_buffer_special_ids = torch.tensor(sorted(special_ids))
+
+    def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
+        outputs = model(**inputs, output_hidden_states=True)
+        loss = outputs.loss
+        hidden = outputs.hidden_states[self.barlow_layer]  # [B, L, D]
+        special_ids = self.register_buffer_special_ids.to(inputs["input_ids"].device)
+        keep = ~torch.isin(inputs["input_ids"], special_ids)  # [B, L]
+        z = hidden[keep]  # [N, D]
+        if z.shape[0] >= 2:
+            bt = barlow_twins_loss(z, self.barlow_lambda)
+            loss = loss + self.barlow_weight * bt
+        return (loss, outputs) if return_outputs else loss
+
+
 class GDESEmbedding(nn.Module):
     """Discriminator-side embedding that holds ``sg(E_G) + Delta`` (DeBERTa-V3 GDES).
 
@@ -671,26 +735,45 @@ def main() -> None:
     model = build_model(pc, tokenizer)
     print(f"[{tag}] arch: {pc.arch}  params: {model.num_parameters()/1e6:.1f}M")
 
+    trainer_kwargs = {}
     if pc.objective == "diffusion":
         schedule = build_schedule(pc)
         collator = DiffusionCollator(tokenizer, schedule)
         trainer_cls = DiffusionTrainer
         print(f"[{tag}] diffusion schedule: {pc.diffusion_schedule}")
-    elif pc.objective == "mlm":
+    elif pc.objective in ("mlm", "barlow"):
+        # "barlow" reuses the MLM noising/collator and adds an auxiliary
+        # Barlow-Twins decorrelation loss on the hidden states via BarlowTrainer;
+        # the model stays a plain ForMaskedLM so eval is identical.
         collator_cls = (
             PackedMLMCollator if pc.arch == "modernbert" else DataCollatorForLanguageModeling
         )
         collator = collator_cls(tokenizer=tokenizer, mlm=True, mlm_probability=pc.mlm_prob)
-        trainer_cls = Trainer
+        if pc.objective == "barlow":
+            trainer_cls = BarlowTrainer
+            trainer_kwargs = dict(
+                barlow_weight=pc.barlow_weight,
+                barlow_lambda=pc.barlow_lambda,
+                barlow_layer=pc.barlow_layer,
+                special_ids=tokenizer.all_special_ids,
+            )
+            print(
+                f"[{tag}] barlow weight: {pc.barlow_weight}  lambda: {pc.barlow_lambda}  "
+                f"layer: {pc.barlow_layer}"
+            )
+        else:
+            trainer_cls = Trainer
     else:
         raise ValueError(
-            f"unknown objective {pc.objective!r}; choose 'mlm', 'diffusion', or 'electra'"
+            f"unknown objective {pc.objective!r}; "
+            "choose 'mlm', 'diffusion', 'electra', or 'barlow'"
         )
     print(f"[{tag}] objective: {pc.objective}")
 
     targs = make_training_args(pc.epochs, pc.max_steps)
     trainer = trainer_cls(
-        model=model, args=targs, train_dataset=ds, data_collator=collator
+        model=model, args=targs, train_dataset=ds, data_collator=collator,
+        **trainer_kwargs,
     )
     trainer.train()
     trainer.save_model(str(out_dir))

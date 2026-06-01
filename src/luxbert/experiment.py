@@ -17,7 +17,7 @@ back to the defaults below)::
                 mlm_prob, diffusion_eps, diffusion_schedule, diffusion_sigma_max,
                 electra_generator_layer_ratio, electra_loss_weight,
                 electra_sample_temperature, electra_finetune_epochs,
-                electra_finetune_steps,
+                electra_finetune_steps, barlow_weight, barlow_lambda, barlow_layer,
                 optim, lr, weight_decay, batch_size, epochs, max_steps,
                 warmup_ratio, num_proc, seed}
     eval:      {max_lines, block_size, micro_batch}
@@ -50,7 +50,7 @@ class TokenizerCfg:
 @dataclass(frozen=True)
 class PretrainCfg:
     arch: str = "bert"  # encoder architecture: "bert" | "modernbert" | "deberta"
-    objective: str = "mlm"  # training objective: "mlm" | "diffusion" | "electra"
+    objective: str = "mlm"  # "mlm" | "diffusion" | "electra" | "barlow"
     block_size: int = 128
     hidden: int = 256
     layers: int = 4
@@ -73,6 +73,17 @@ class PretrainCfg:
     electra_sample_temperature: float = 1.0
     electra_finetune_epochs: float = 1.0
     electra_finetune_steps: int = -1
+    # Barlow-Twins-only knobs (objective="barlow"). An auxiliary redundancy-reduction
+    # loss is added to MLM to decorrelate the encoder's hidden dimensions:
+    # total = mlm_loss + barlow_weight * barlow_twins_loss(hidden, barlow_lambda).
+    # barlow_lambda is the off-diagonal weight inside the BT loss (Zbontar et al.
+    # 2021 use ~5e-3); barlow_weight scales the whole BT term against MLM.
+    # barlow_layer indexes which hidden state to decorrelate: -1 = the final layer
+    # (contextual reps), 0 = the embedding layer output (the word embeddings, before
+    # any transformer block).
+    barlow_weight: float = 1.0
+    barlow_lambda: float = 5e-3
+    barlow_layer: int = -1
     optim: str = "adamw_torch"
     lr: float = 5e-4
     weight_decay: float = 0.01

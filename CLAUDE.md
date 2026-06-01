@@ -82,6 +82,16 @@ State passes between stages as **files on disk** at the namespaced paths above.
    `pretrain.diffusion_schedule` picks it — `linear` (`α_t=1-t`, hazard `1/t`) or
    `loglinear` (`α_t=exp(-σ_max·t)`, hazard `σ_max·α_t/(1-α_t)`, decaying in `t`). The
    model stays a `*ForMaskedLM` denoiser, so eval is unchanged.
+   A fourth objective, `barlow`, keeps MLM but adds an auxiliary **Barlow-Twins**
+   redundancy-reduction loss on the encoder's final hidden states so the embedding
+   dimensions are decorrelated: `total = mlm_loss + barlow_weight · BT(hidden, barlow_lambda)`,
+   where `BT` standardizes the non-special token reps across the batch, forms the
+   `D×D` cross-correlation matrix, and pulls it toward identity (`(1-C_ii)²` +
+   `barlow_lambda·Σ_{i≠j}C_ij²`). `pretrain.barlow_layer` chooses which hidden state
+   to decorrelate — `-1` (default) the final contextual reps, `0` the embedding-layer
+   output (the word embeddings, before any transformer block). `BarlowTrainer` reuses
+   the MLM collator and the plain `*ForMaskedLM` model (only the loss adds the BT
+   term), so eval is unchanged.
    Architecture, objective, and hyperparameters are identical across the two kinds of a
    pair — only the tokenizer and text differ. PoC-sized defaults; the SLURM script
    overrides with larger model/data.
