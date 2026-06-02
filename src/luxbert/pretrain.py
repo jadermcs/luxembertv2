@@ -425,15 +425,22 @@ class BarlowTrainer(Trainer):
         self.register_buffer_special_ids = torch.tensor(sorted(special_ids))
 
     def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
-        outputs = model(**inputs, output_hidden_states=True)
+        # The BT term is a training-only regularizer. During evaluation the model is
+        # in eval mode (Trainer calls model.eval()), so we report MLM-only loss there
+        # -- this keeps the eval_loss curve comparable to the baseline/MLM run and to
+        # eval_bpb, which scores the plain ForMaskedLM. We also skip the hidden-state
+        # output when we don't need it.
+        training = model.training
+        outputs = model(**inputs, output_hidden_states=training)
         loss = outputs.loss
-        hidden = outputs.hidden_states[self.barlow_layer]  # [B, L, D]
-        special_ids = self.register_buffer_special_ids.to(inputs["input_ids"].device)
-        keep = ~torch.isin(inputs["input_ids"], special_ids)  # [B, L]
-        z = hidden[keep]  # [N, D]
-        if z.shape[0] >= 2:
-            bt = barlow_twins_loss(z, self.barlow_lambda)
-            loss = loss + self.barlow_weight * bt
+        if training:
+            hidden = outputs.hidden_states[self.barlow_layer]  # [B, L, D]
+            special_ids = self.register_buffer_special_ids.to(inputs["input_ids"].device)
+            keep = ~torch.isin(inputs["input_ids"], special_ids)  # [B, L]
+            z = hidden[keep]  # [N, D]
+            if z.shape[0] >= 2:
+                bt = barlow_twins_loss(z, self.barlow_lambda)
+                loss = loss + self.barlow_weight * bt
         return (loss, outputs) if return_outputs else loss
 
 
